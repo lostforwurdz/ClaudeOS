@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Archive, Bot, ChevronDown, Clock3, Loader2, WandSparkles } from "lucide-react";
+import {
+  Archive,
+  Bot,
+  ChevronDown,
+  Clock3,
+  Loader2,
+  MessageCircle,
+  WandSparkles,
+} from "lucide-react";
 import { useWorkspaceSelection } from "@/lib/workspaceSelection";
 import { Button } from "@/components/ui/button";
+import { StatusDot } from "@/components/ui/status-dot";
 
 const SUBAGENT_SESSIONS_POLL_INTERVAL_MS = 2000;
 type InspectableSessionFilter = "all" | "subagent" | "cronjob" | "task_proposal";
@@ -210,7 +219,7 @@ export function SubagentSessionsPane({
               {isLoading && sessions.length === 0 ? (
                 <Loader2 size={14} className="animate-spin" />
               ) : (
-                <Bot size={14} />
+                <MessageCircle size={14} />
               )}
             </span>
             <div className="min-w-0 flex-1">
@@ -288,11 +297,11 @@ export function SubagentSessionsPane({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-border px-4 py-3 sm:px-5">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="shrink-0 px-4 py-3 sm:px-5">
+        <div className="flex flex-wrap items-center gap-1">
           {(
             [
-              ["all", "All", Bot],
+              ["all", "All", MessageCircle],
               ["subagent", "Subagents", Bot],
               ["cronjob", "Cronjobs", Clock3],
               ["task_proposal", "Task proposals", WandSparkles],
@@ -300,63 +309,62 @@ export function SubagentSessionsPane({
           ).map(([filterId, label, Icon]) => {
             const isActive = activeFilter === filterId;
             return (
-              <Button
+              <button
                 key={filterId}
                 type="button"
-                variant={isActive ? "secondary" : "outline"}
-                size="sm"
                 onClick={() => setActiveFilter(filterId)}
-                className="h-8 gap-1.5 rounded-full px-3 text-xs"
+                className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors ${
+                  isActive
+                    ? "bg-fg-8 text-foreground"
+                    : "text-muted-foreground hover:bg-fg-2 hover:text-foreground"
+                }`}
               >
                 <Icon size={13} />
                 <span>{label}</span>
-              </Button>
+              </button>
             );
           })}
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 sm:px-5">
         {filteredSessions.length === 0 ? (
-          <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-border bg-muted/20 px-6 text-center text-sm text-muted-foreground">
+          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
             No matching sessions yet.
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="divide-y divide-border border-y border-border">
             {filteredSessions.map((session) => {
-            const title =
-              session.title?.trim() || inspectableRunSessionLabel(session);
-            const archived = Boolean((session.archived_at || "").trim());
-            const updatedLabel = formatSessionUpdatedLabel(session);
-            return (
-              <button
-                key={session.session_id}
-                type="button"
-                onClick={() => onOpenSession?.(session)}
-                className="flex w-full min-w-0 items-start gap-2 rounded-2xl border border-border bg-card/95 px-4 py-3 text-left shadow-2xs transition hover:border-primary/40 hover:text-primary"
-              >
-                <span className="mt-0.5 grid size-4 shrink-0 place-items-center text-muted-foreground">
-                  {inspectableRunSessionCategory(session) === "task_proposal" ? (
-                    <WandSparkles size={14} />
-                  ) : inspectableRunSessionCategory(session) === "cronjob" ? (
-                    <Clock3 size={14} />
-                  ) : archived ? (
-                    <Archive size={14} />
-                  ) : (
-                    <Bot size={14} />
-                  )}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium text-foreground">
+              const title =
+                session.title?.trim() || inspectableRunSessionLabel(session);
+              const archived = Boolean((session.archived_at || "").trim());
+              const updatedLabel = formatSessionUpdatedLabel(session);
+              const kindLabel = archived
+                ? "Archived"
+                : inspectableRunSessionLabel(session);
+              const isTaskProposal =
+                inspectableRunSessionCategory(session) === "task_proposal" &&
+                !archived;
+              const meta = updatedLabel
+                ? `${kindLabel} · ${updatedLabel}`
+                : kindLabel;
+              return (
+                <button
+                  key={session.session_id}
+                  type="button"
+                  onClick={() => onOpenSession?.(session)}
+                  className="group flex w-full min-w-0 items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-fg-2"
+                >
+                  {isTaskProposal ? (
+                    <StatusDot variant="warning" size="sm" />
+                  ) : null}
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
                     {title}
-                  </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                    <span>{inspectableRunSessionLabel(session)}</span>
-                    {archived ? <span>Archived</span> : <span>Live</span>}
-                    {updatedLabel ? <span>{updatedLabel}</span> : null}
-                  </div>
-                </div>
-              </button>
-            );
+                  </span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {meta}
+                  </span>
+                </button>
+              );
             })}
           </div>
         )}
