@@ -222,6 +222,19 @@ export interface RunSummary {
 }
 
 /**
+ * bsky-1: a row in the Mission Control dashboard. Joins a running run
+ * with its session + workspace so the renderer doesn't have to make
+ * per-row lookups.
+ */
+export interface ActiveRun {
+  run: RunSummary;
+  workspace_id: string;
+  workspace_name: string;
+  claude_session_id: string | null;
+  session_id: string;
+}
+
+/**
  * Paginated list response. `next_before` is the cursor for the next page —
  * pass it as the `before` query param to fetch older items. `null` when
  * there are no more items.

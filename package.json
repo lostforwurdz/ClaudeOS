@@ -11,7 +11,7 @@
     "desktop:test": "npm --prefix desktop run test",
     "desktop:typecheck": "npm --prefix desktop run typecheck",
     "desktop:rebuild-natives": "node scripts/rebuild-natives.mjs electron",
-    "desktop:e2e": "node scripts/rebuild-natives.mjs electron && npm --prefix desktop run build && npm --prefix desktop run e2e",
+    "desktop:e2e": "node scripts/rebuild-natives.mjs electron && npm run api-server:build && npm --prefix desktop run build && npm --prefix desktop run e2e",
     "rebuild-natives:node": "node scripts/rebuild-natives.mjs node",
     "rebuild-natives:electron": "node scripts/rebuild-natives.mjs electron",
     "harness:install": "npm install --prefix runtime/harness",

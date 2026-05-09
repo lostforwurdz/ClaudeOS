@@ -606,6 +606,21 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
     return run;
   });
 
+  // bsky-1: cross-workspace active-run dashboard. The renderer polls this
+  // every few seconds to keep Mission Control fresh. Backed by a single
+  // SQL join (no per-row lookups) so the cost is constant in the number
+  // of running runs rather than the count of historical runs.
+  app.get("/active-runs", async () => {
+    const rows = runs.listActiveRuns();
+    return rows.map((r) => ({
+      run: r.run,
+      workspace_id: r.workspace_id,
+      workspace_name: r.workspace_name,
+      claude_session_id: r.claude_session_id,
+      session_id: r.run.session_id,
+    }));
+  });
+
   app.get<{ Params: { id: string } }>("/runs/:id/events", async (request, reply) => {
     const run = runs.getRun(request.params.id);
     if (!run) return reply.code(404).send({ error: "run not found" });

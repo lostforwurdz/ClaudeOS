@@ -201,6 +201,53 @@ export class RunManager {
   }
 
   /**
+   * bsky-1: every run currently in the 'running' state across all sessions,
+   * joined with workspace + session metadata so Mission Control can render
+   * a single cross-workspace dashboard. Newest first by started_at.
+   */
+  listActiveRuns(): Array<{
+    run: RunRecord;
+    workspace_id: string;
+    workspace_name: string;
+    claude_session_id: string | null;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT r.id, r.session_id, r.input_id, r.status, r.started_at, r.completed_at,
+                s.workspace_id, s.claude_session_id, w.name AS workspace_name
+           FROM runs r
+           JOIN sessions s ON s.id = r.session_id
+           JOIN workspaces w ON w.id = s.workspace_id
+          WHERE r.status = 'running'
+          ORDER BY r.started_at DESC`,
+      )
+      .all() as Array<{
+      id: string;
+      session_id: string;
+      input_id: string;
+      status: RunRecord["status"];
+      started_at: string;
+      completed_at: string | null;
+      workspace_id: string;
+      claude_session_id: string | null;
+      workspace_name: string;
+    }>;
+    return rows.map((r) => ({
+      run: {
+        id: r.id,
+        session_id: r.session_id,
+        input_id: r.input_id,
+        status: r.status,
+        started_at: r.started_at,
+        completed_at: r.completed_at,
+      },
+      workspace_id: r.workspace_id,
+      workspace_name: r.workspace_name,
+      claude_session_id: r.claude_session_id,
+    }));
+  }
+
+  /**
    * Newest-first paginated history of runs for a session. Cursor `before` is
    * a `started_at` ISO timestamp; pass the previous page's last `started_at`
    * to walk backwards through history.
