@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   renderPreflightHtml,
+  renderSetupHtml,
   runPreflight,
   type WhichLookup,
 } from "./preflight.js";
@@ -80,6 +81,18 @@ test("preflight: a null bundledClaudePath falls back to PATH lookup", async () =
   assert.equal(result.ok, true);
   if (!result.ok) throw new Error("type narrow");
   assert.equal(result.claudePath, "/usr/local/bin/claude");
+});
+
+test("renderSetupHtml exposes the paste form, button, and IPC bridge call", () => {
+  const html = renderSetupHtml();
+  // Bridge call must match the channel exposed by preload-setup.ts.
+  assert.match(html, /claudeosSetup\.submit/);
+  // Critical UI hooks the page's JS targets via getElementById.
+  assert.match(html, /id="token"/);
+  assert.match(html, /id="save"/);
+  assert.match(html, /id="status"/);
+  // The setup-token instruction stays prominent so users know how to get a token.
+  assert.match(html, /claude setup-token/);
 });
 
 test("renderPreflightHtml escapes user-controlled content and embeds the body", () => {

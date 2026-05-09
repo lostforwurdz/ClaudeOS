@@ -160,3 +160,134 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
+
+/**
+ * Render an interactive token-paste page (dcp.10). Replaces the static
+ * missing_oauth_token preflight error with a form the user submits to the
+ * main process via the `claudeos:save-token` IPC channel.
+ *
+ * Self-contained: no external CSS, no fonts, no Vite. The preload script
+ * (loaded by the BrowserWindow that displays this page) exposes
+ * `window.claudeosSetup.submit(token)` and re-routes results back via
+ * `window.claudeosSetup.onResult(handler)`.
+ */
+export function renderSetupHtml(): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ClaudeOS — sign in</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        padding: 48px;
+        background: #0e0e0e;
+        color: #e5e5e5;
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      }
+      h1 { font-size: 18px; letter-spacing: -0.2px; margin: 0 0 16px; }
+      p { margin: 0 0 12px; }
+      ol { margin: 0 0 16px 20px; padding: 0; }
+      ol li { margin-bottom: 6px; }
+      code, pre {
+        font-family: "JetBrains Mono", Menlo, Consolas, monospace;
+        font-size: 12px;
+        color: #9bc1ff;
+      }
+      pre {
+        background: #161616;
+        border: 1px solid #2a2a2a;
+        border-radius: 4px;
+        padding: 8px 12px;
+        margin: 8px 0;
+      }
+      textarea {
+        width: 100%;
+        min-height: 80px;
+        max-height: 200px;
+        background: #161616;
+        color: #e5e5e5;
+        border: 1px solid #2a2a2a;
+        border-radius: 4px;
+        padding: 10px;
+        font-family: "JetBrains Mono", Menlo, Consolas, monospace;
+        font-size: 12px;
+        box-sizing: border-box;
+        resize: vertical;
+      }
+      button {
+        background: #1f1f1f;
+        color: #e5e5e5;
+        border: 1px solid #2a2a2a;
+        border-radius: 4px;
+        padding: 8px 16px;
+        font-size: 13px;
+        cursor: pointer;
+        margin-top: 12px;
+      }
+      button:hover:not(:disabled) { background: #2a2a2a; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .pill {
+        display: inline-block;
+        padding: 2px 8px;
+        font-size: 11px;
+        background: #1a3a2a;
+        color: #5fdcb6;
+        border-radius: 999px;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        margin-bottom: 12px;
+      }
+      #status { margin-top: 12px; min-height: 18px; font-size: 12px; }
+      #status.ok { color: #5fdcb6; }
+      #status.err { color: #ff6464; }
+    </style>
+  </head>
+  <body>
+    <span class="pill">First-run setup</span>
+    <h1>Sign in to Claude</h1>
+    <p>ClaudeOS needs a long-lived OAuth token to authenticate against your Claude subscription.</p>
+    <ol>
+      <li>Open a terminal and run:<pre>claude setup-token</pre></li>
+      <li>Sign in via the browser flow that opens.</li>
+      <li>Copy the token printed at the end and paste it below.</li>
+    </ol>
+    <textarea id="token" placeholder="Paste token here…" autocomplete="off" spellcheck="false"></textarea>
+    <div>
+      <button id="save" disabled>Save token</button>
+    </div>
+    <div id="status" role="status"></div>
+    <script>
+      const tokenEl = document.getElementById("token");
+      const saveBtn = document.getElementById("save");
+      const statusEl = document.getElementById("status");
+      tokenEl.addEventListener("input", () => {
+        saveBtn.disabled = tokenEl.value.trim().length === 0;
+      });
+      saveBtn.addEventListener("click", async () => {
+        saveBtn.disabled = true;
+        statusEl.className = "";
+        statusEl.textContent = "Saving…";
+        try {
+          const result = await window.claudeosSetup.submit(tokenEl.value);
+          if (result.ok) {
+            statusEl.className = "ok";
+            statusEl.textContent = result.warning
+              ? "Saved (" + result.mode + "): " + result.warning
+              : "Saved (" + result.mode + "). Starting ClaudeOS…";
+          } else {
+            statusEl.className = "err";
+            statusEl.textContent = result.error;
+            saveBtn.disabled = false;
+          }
+        } catch (err) {
+          statusEl.className = "err";
+          statusEl.textContent = String(err && err.message ? err.message : err);
+          saveBtn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>`;
+}
