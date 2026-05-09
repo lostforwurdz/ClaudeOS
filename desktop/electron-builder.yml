@@ -55,6 +55,11 @@ asar: true
 # Native modules that can't run from inside the asar archive.
 asarUnpack:
   - "node_modules/better-sqlite3/**/*"
+  # @lydell/node-pty (kobramaz-7ho) is a native module — its prebuilt .node
+  # binary lives in the platform-specific sibling package and cannot run
+  # from inside the asar archive.
+  - "node_modules/@lydell/node-pty/**/*"
+  - "node_modules/@lydell/node-pty-*/**/*"
 
 linux:
   category: Development
