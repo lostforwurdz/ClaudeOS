@@ -9,6 +9,14 @@ export type {
   ClaudeMcpServerEntry,
   MaterializedMcpConfig,
 } from "./mcp-config.js";
+export {
+  buildStreamUserMessage,
+  needsStreamInput,
+} from "./stream-input.js";
+export type {
+  AttachmentReader,
+  StreamUserMessage,
+} from "./stream-input.js";
 export type {
   RunRequest,
   RunEvent,

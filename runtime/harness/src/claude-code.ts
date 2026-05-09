@@ -6,7 +6,7 @@
  */
 
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import type { Readable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
 import { createInterface } from "node:readline";
 
 import type {
@@ -16,6 +16,7 @@ import type {
 } from "@claudeos/runtime-client/contracts";
 
 import { materializeMcpConfig, type MaterializedMcpConfig } from "./mcp-config.js";
+import { buildStreamUserMessage, needsStreamInput } from "./stream-input.js";
 
 export interface HarnessOptions {
   /** Absolute path to the workspace directory. Set as CWD and as --add-dir. */
@@ -53,15 +54,28 @@ export async function runHarness(
       : null;
 
   try {
-    const args = buildArgs(request, options, mcpConfig);
+    const useStreamInput = needsStreamInput(request);
+    const args = buildArgs(request, options, mcpConfig, useStreamInput);
     const env = buildEnv(options);
     const binary = options.claudeBinary ?? "claude";
 
+    // Always pipe stdin so the type narrows to a writable stream regardless of
+    // whether we send a stream-json user message. In text-input mode we just
+    // close it immediately, which claude treats as "no stdin payload".
     const child = spawn(binary, args, {
       cwd: options.workspaceDir,
       env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
+
+    if (useStreamInput) {
+      const userMessage = await buildStreamUserMessage(request, {
+        workspaceDir: options.workspaceDir,
+      });
+      writeStreamInput(child.stdin, userMessage);
+    } else {
+      child.stdin.end();
+    }
 
     const state: ParserState = {
       request,
@@ -119,6 +133,7 @@ export function buildArgs(
   request: RunRequest,
   options: HarnessOptions,
   mcpConfig: MaterializedMcpConfig | null = null,
+  useStreamInput = false,
 ): string[] {
   // --add-dir is variadic: it consumes every following non-flag token until the
   // next flag. If it lands directly before the positional prompt, claude swallows
@@ -138,6 +153,9 @@ export function buildArgs(
     "--verbose",
   );
 
+  if (useStreamInput) {
+    args.push("--input-format", "stream-json");
+  }
   if (mcpConfig) {
     args.push("--mcp-config", mcpConfig.path);
   }
@@ -154,8 +172,20 @@ export function buildArgs(
     args.push("--permission-mode", request.permission_mode);
   }
 
-  args.push(request.instruction);
+  // Positional prompt only in text-input mode. Stream-json delivers the prompt
+  // through stdin as a typed user message.
+  if (!useStreamInput) {
+    args.push(request.instruction);
+  }
   return args;
+}
+
+function writeStreamInput(
+  stdin: Writable,
+  message: { type: "user"; message: { role: "user"; content: unknown[] } },
+): void {
+  stdin.write(`${JSON.stringify(message)}\n`);
+  stdin.end();
 }
 
 function buildEnv(options: HarnessOptions): NodeJS.ProcessEnv {
@@ -168,7 +198,7 @@ function buildEnv(options: HarnessOptions): NodeJS.ProcessEnv {
 }
 
 function attachCancellation(
-  child: ChildProcessByStdio<null, Readable, Readable>,
+  child: ChildProcessByStdio<Writable, Readable, Readable>,
   signal: AbortSignal | undefined,
 ): void {
   if (!signal) return;

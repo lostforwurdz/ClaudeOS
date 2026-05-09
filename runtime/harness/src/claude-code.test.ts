@@ -269,6 +269,26 @@ test("buildArgs omits --mcp-config when no MCP servers are requested", () => {
   assert.equal(args.includes("--mcp-config"), false);
 });
 
+test("buildArgs switches to --input-format stream-json and drops the positional prompt when useStreamInput=true", () => {
+  const args = buildArgs(
+    REQ,
+    { workspaceDir: "/tmp/ws", onEvent: () => {} },
+    null,
+    true,
+  );
+  const inputFormatIdx = args.indexOf("--input-format");
+  assert.notEqual(inputFormatIdx, -1);
+  assert.equal(args[inputFormatIdx + 1], "stream-json");
+  // Positional prompt must NOT be present when stdin carries the user message.
+  assert.equal(args.includes(REQ.instruction), false);
+});
+
+test("buildArgs keeps the positional prompt and omits --input-format in default text mode", () => {
+  const args = buildArgs(REQ, { workspaceDir: "/tmp/ws", onEvent: () => {} });
+  assert.equal(args.includes("--input-format"), false);
+  assert.equal(args[args.length - 1], REQ.instruction);
+});
+
 test("buildArgs inserts --mcp-config <path> before --resume/--model when servers are present", () => {
   const handle = materializeMcpConfig([
     { name: "context7", type: "stdio", command: ["npx", "-y", "@upstash/context7-mcp"] },
