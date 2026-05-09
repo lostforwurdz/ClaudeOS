@@ -20,6 +20,12 @@ import type {
 import { defaultDbPath, openDb } from "./db.js";
 import { EventBus } from "./event-bus.js";
 import { RunManager } from "./runs.js";
+import {
+  TemplateError,
+  applyTemplate,
+  defaultTemplatesDir,
+  listTemplates,
+} from "./templates.js";
 import { MAX_UPLOAD_BYTES, saveUpload } from "./uploads.js";
 
 // ----------------------------------------------------------------------------
@@ -29,6 +35,7 @@ import { MAX_UPLOAD_BYTES, saveUpload } from "./uploads.js";
 const CreateWorkspaceSchema = z.object({
   name: z.string().min(1),
   dir: z.string().min(1),
+  template: z.string().min(1).optional(),
 });
 
 const UpdateWorkspaceSchema = z.object({
@@ -68,6 +75,7 @@ interface Repo {
   deleteWorkspace(id: string): boolean;
   createSession(body: CreateSessionBody): Session;
   getSession(id: string): Session | null;
+  listSessions(workspaceId: string, opts: { limit: number; before?: string }): Session[];
 }
 
 function createRepo(db: DatabaseType): Repo {
@@ -132,6 +140,31 @@ function createRepo(db: DatabaseType): Repo {
         .get(id) as Session | undefined;
       return row ?? null;
     },
+    listSessions(workspaceId, { limit, before }) {
+      // Newest-first cursor pagination on created_at. We over-fetch by 1 and
+      // tie-break on id so callers using `before=<created_at>` can't loop on
+      // sessions sharing a millisecond.
+      const stmt = before
+        ? db.prepare(
+            `SELECT id, workspace_id, claude_session_id, created_at, updated_at
+               FROM sessions
+              WHERE workspace_id = ? AND created_at < ?
+              ORDER BY created_at DESC, id DESC
+              LIMIT ?`,
+          )
+        : db.prepare(
+            `SELECT id, workspace_id, claude_session_id, created_at, updated_at
+               FROM sessions
+              WHERE workspace_id = ?
+              ORDER BY created_at DESC, id DESC
+              LIMIT ?`,
+          );
+      return (
+        before
+          ? (stmt.all(workspaceId, before, limit) as Session[])
+          : (stmt.all(workspaceId, limit) as Session[])
+      );
+    },
   };
 }
 
@@ -157,12 +190,26 @@ export interface ServerOptions {
    */
   browserMcpBin?: string | null;
   /**
+   * Absolute path to the ClaudeOS memory MCP server entry (e.g. the built
+   * `packages/memory-mcp/dist/index.mjs`). When set, every submitted run
+   * gets `claudeos-memory` injected into `mcp_servers`, exposing the
+   * AgenticOS `bd` memory layer so the agent can `memory_remember`,
+   * `memory_recall`, etc. inside the run. ajr.1.
+   */
+  memoryMcpBin?: string | null;
+  /**
    * Absolute path to the ClaudeOS permission-hook launcher
    * (`packages/claude-cli/permission-hook.js`). When set, runs are configured
    * with a per-run --settings file that defers tool calls so the desktop can
    * collect approve/deny decisions before they execute (xh4.2).
    */
   permissionHookBin?: string | null;
+  /**
+   * Directory containing workspace templates. Each subdirectory is one
+   * template, with a `template.json` manifest and seed files. Defaults to
+   * the templates dir shipped alongside the api-server build.
+   */
+  templatesDir?: string;
 }
 
 // Both forms — the dev launcher loads the renderer from http://127.0.0.1:5173
@@ -176,6 +223,12 @@ const DEFAULT_DEV_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"];
  * here as a string literal to avoid a runtime dep on that package.
  */
 const BROWSER_MCP_NAME = "claudeos-browser";
+
+/**
+ * Same pattern, for the memory MCP. Duplicated to keep the api-server
+ * dependency-free of `@claudeos/memory-mcp` itself.
+ */
+const MEMORY_MCP_NAME = "claudeos-memory";
 
 /**
  * Inject the browser MCP into a run request's `mcp_servers` list when the
@@ -197,6 +250,31 @@ export function applyBrowserMcpOverlay(
   return { ...request, mcp_servers: [...existing, overlay] };
 }
 
+/**
+ * Inject the memory MCP. Same overlay shape as the browser MCP but also
+ * passes through env vars so the spawned child can find `bd` and namespace
+ * its writes correctly.
+ */
+export function applyMemoryMcpOverlay(
+  request: RunRequest,
+  memoryMcpBin: string | null | undefined,
+  env?: { bdBinary?: string | null; writePrefix?: string | null },
+): RunRequest {
+  if (!memoryMcpBin) return request;
+  const existing = request.mcp_servers ?? [];
+  if (existing.some((s) => s.name === MEMORY_MCP_NAME)) return request;
+  const childEnv: Record<string, string> = {};
+  if (env?.bdBinary) childEnv.CLAUDEOS_BD_BIN = env.bdBinary;
+  if (env?.writePrefix) childEnv.CLAUDEOS_MEMORY_PREFIX = env.writePrefix;
+  const overlay: McpServerConfig = {
+    name: MEMORY_MCP_NAME,
+    type: "stdio",
+    command: ["node", memoryMcpBin],
+    ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
+  };
+  return { ...request, mcp_servers: [...existing, overlay] };
+}
+
 export async function createServer(opts: ServerOptions = {}): Promise<FastifyInstance> {
   const db = openDb(opts.dbPath ?? defaultDbPath());
   const repo = createRepo(db);
@@ -207,7 +285,10 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
 
   if (opts.corsOrigins !== false) {
     const origins = opts.corsOrigins ?? DEFAULT_DEV_ORIGINS;
-    await app.register(corsPlugin, { origin: origins });
+    await app.register(corsPlugin, {
+      origin: origins,
+      methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
+    });
   }
 
   await app.register(websocketPlugin);
@@ -217,11 +298,28 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
 
   app.get("/health", async () => ({ ok: true }));
 
+  const templatesDir = opts.templatesDir ?? defaultTemplatesDir();
+
+  // -- Templates ------------------------------------------------------------
+
+  app.get("/templates", async () => listTemplates(templatesDir));
+
   // -- Workspaces -----------------------------------------------------------
 
   app.post("/workspaces", async (request, reply) => {
     const parsed = CreateWorkspaceSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.format() });
+    if (parsed.data.template) {
+      try {
+        applyTemplate(parsed.data.template, parsed.data.dir, templatesDir);
+      } catch (err) {
+        if (err instanceof TemplateError) {
+          const status = err.code === "not_found" ? 404 : 400;
+          return reply.code(status).send({ error: err.message, code: err.code });
+        }
+        throw err;
+      }
+    }
     return repo.createWorkspace(parsed.data);
   });
 
@@ -309,6 +407,48 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
     return session;
   });
 
+  // History listings — cursor pagination on created_at/started_at DESC.
+  // `next_before` is the ISO cursor for the next (older) page, or null at the end.
+  const HISTORY_DEFAULT_LIMIT = 50;
+  const HISTORY_MAX_LIMIT = 200;
+  const HistoryQuerySchema = z.object({
+    limit: z.coerce.number().int().min(1).max(HISTORY_MAX_LIMIT).optional(),
+    before: z.string().datetime().optional(),
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { limit?: string; before?: string } }>(
+    "/workspaces/:id/sessions",
+    async (request, reply) => {
+      if (!repo.getWorkspace(request.params.id)) {
+        return reply.code(404).send({ error: "workspace not found" });
+      }
+      const parsed = HistoryQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.code(400).send({ error: parsed.error.format() });
+      const limit = parsed.data.limit ?? HISTORY_DEFAULT_LIMIT;
+      const items = repo.listSessions(request.params.id, { limit, before: parsed.data.before });
+      const next_before = items.length === limit ? items[items.length - 1].created_at : null;
+      return { items, next_before };
+    },
+  );
+
+  app.get<{ Params: { id: string }; Querystring: { limit?: string; before?: string } }>(
+    "/sessions/:id/runs",
+    async (request, reply) => {
+      if (!repo.getSession(request.params.id)) {
+        return reply.code(404).send({ error: "session not found" });
+      }
+      const parsed = HistoryQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.code(400).send({ error: parsed.error.format() });
+      const limit = parsed.data.limit ?? HISTORY_DEFAULT_LIMIT;
+      const items = runs.listRunsForSession(request.params.id, {
+        limit,
+        before: parsed.data.before,
+      });
+      const next_before = items.length === limit ? items[items.length - 1].started_at : null;
+      return { items, next_before };
+    },
+  );
+
   // -- Runs -----------------------------------------------------------------
 
   app.post("/runs", async (request, reply): Promise<SubmitRunResponse | { error: unknown }> => {
@@ -317,7 +457,10 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
       reply.code(400);
       return { error: parsed.error.format() };
     }
-    const runRequest = applyBrowserMcpOverlay(parsed.data as RunRequest, opts.browserMcpBin);
+    const runRequest = applyMemoryMcpOverlay(
+      applyBrowserMcpOverlay(parsed.data as RunRequest, opts.browserMcpBin),
+      opts.memoryMcpBin,
+    );
     const workspace = repo.getWorkspace(runRequest.workspace_id);
     if (!workspace) {
       reply.code(404);
@@ -434,12 +577,14 @@ async function main(): Promise<void> {
   const host = process.env.CLAUDEOS_HOST ?? "127.0.0.1";
   const corsOrigins = parseCorsOriginsEnv(process.env.CLAUDEOS_CORS_ORIGINS);
   const browserMcpBin = process.env.CLAUDEOS_BROWSER_MCP_BIN ?? null;
+  const memoryMcpBin = process.env.CLAUDEOS_MEMORY_MCP_BIN ?? null;
   const permissionHookBin = process.env.CLAUDEOS_PERMISSION_HOOK_BIN ?? null;
   const app = await createServer({
     port,
     host,
     corsOrigins,
     browserMcpBin,
+    memoryMcpBin,
     permissionHookBin,
   });
   app.log.info(`ClaudeOS api-server listening on ${host}:${port}`);

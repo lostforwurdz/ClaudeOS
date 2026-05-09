@@ -36,6 +36,11 @@ files:
 extraResources:
   - from: "../runtime/api-server/dist"
     to: "api-server/dist"
+  # Workspace templates (ajr.4). Resolved by api-server at runtime as
+  # `../templates/` relative to dist/index.mjs, which lands at
+  # <resourcesPath>/api-server/templates in the packaged build.
+  - from: "../runtime/api-server/templates"
+    to: "api-server/templates"
   - from: "../runtime/api-server/node_modules"
     to: "api-server/node_modules"
     filter: ["**/*", "!**/.cache", "!**/test", "!**/tests", "!**/*.md"]
@@ -43,6 +48,14 @@ extraResources:
     to: "browser-mcp/dist"
   - from: "../packages/browser-mcp/node_modules"
     to: "browser-mcp/node_modules"
+    filter: ["**/*", "!**/.cache", "!**/test", "!**/tests", "!**/*.md"]
+  # Memory MCP (ajr.1). Wraps `bd remember`/`recall`/`memories`/`forget` so
+  # ClaudeOS-spawned Claude Code subprocesses can read/write the operator's
+  # AgenticOS memory layer.
+  - from: "../packages/memory-mcp/dist"
+    to: "memory-mcp/dist"
+  - from: "../packages/memory-mcp/node_modules"
+    to: "memory-mcp/node_modules"
     filter: ["**/*", "!**/.cache", "!**/test", "!**/tests", "!**/*.md"]
   # Pinned `@anthropic-ai/claude-code` CLI (dcp.9). The bundled-claude resolver
   # in `desktop/electron/bundled-claude.ts` looks for the binary at

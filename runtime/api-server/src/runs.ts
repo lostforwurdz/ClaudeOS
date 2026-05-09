@@ -199,4 +199,36 @@ export class RunManager {
       .get(runId) as RunRecord | undefined;
     return row ?? null;
   }
+
+  /**
+   * Newest-first paginated history of runs for a session. Cursor `before` is
+   * a `started_at` ISO timestamp; pass the previous page's last `started_at`
+   * to walk backwards through history.
+   */
+  listRunsForSession(
+    sessionId: string,
+    opts: { limit: number; before?: string },
+  ): RunRecord[] {
+    const { limit, before } = opts;
+    if (before) {
+      return this.db
+        .prepare(
+          `SELECT id, session_id, input_id, status, started_at, completed_at
+             FROM runs
+            WHERE session_id = ? AND started_at < ?
+            ORDER BY started_at DESC, id DESC
+            LIMIT ?`,
+        )
+        .all(sessionId, before, limit) as RunRecord[];
+    }
+    return this.db
+      .prepare(
+        `SELECT id, session_id, input_id, status, started_at, completed_at
+           FROM runs
+          WHERE session_id = ?
+          ORDER BY started_at DESC, id DESC
+          LIMIT ?`,
+      )
+      .all(sessionId, limit) as RunRecord[];
+  }
 }

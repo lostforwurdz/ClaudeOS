@@ -89,6 +89,21 @@ function resolveBrowserMcpEntry(): string | null {
   return null;
 }
 
+function resolveMemoryMcpEntry(): string | null {
+  const packaged = join(process.resourcesPath, "memory-mcp", "dist", "index.mjs");
+  const devCandidates = [
+    resolve(__dirname, "..", "..", "..", "packages", "memory-mcp", "dist", "index.mjs"),
+    resolve(__dirname, "..", "..", "packages", "memory-mcp", "dist", "index.mjs"),
+  ];
+  if (app.isPackaged) {
+    return existsSync(packaged) ? packaged : null;
+  }
+  for (const path of devCandidates) {
+    if (existsSync(path)) return path;
+  }
+  return null;
+}
+
 /**
  * xh4.2: locate the bundled permission-hook launcher so the api-server can
  * point claude's --settings at it. Layout mirrors the bundled CLI resolver
@@ -138,6 +153,7 @@ async function waitForApiReady(timeoutMs = 10_000): Promise<void> {
 function spawnApiServer(claudePath: string): ChildProcess {
   const apiServerEntry = resolveApiServerEntry();
   const browserMcp = resolveBrowserMcpEntry();
+  const memoryMcp = resolveMemoryMcpEntry();
   const permissionHook = resolvePermissionHookEntry();
   const child = spawn(process.execPath, [apiServerEntry], {
     env: {
@@ -148,6 +164,7 @@ function spawnApiServer(claudePath: string): ChildProcess {
       // GUI session inherited a stripped PATH (common on macOS).
       CLAUDEOS_CLAUDE_BINARY: claudePath,
       ...(browserMcp ? { CLAUDEOS_BROWSER_MCP_BIN: browserMcp } : {}),
+      ...(memoryMcp ? { CLAUDEOS_MEMORY_MCP_BIN: memoryMcp } : {}),
       ...(permissionHook ? { CLAUDEOS_PERMISSION_HOOK_BIN: permissionHook } : {}),
     },
     stdio: "inherit",

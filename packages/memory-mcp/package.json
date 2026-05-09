@@ -1,0 +1,25 @@
+{
+  "name": "@claudeos/memory-mcp",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "bin": {
+    "claudeos-memory-mcp": "dist/index.mjs"
+  },
+  "scripts": {
+    "build": "tsup --config tsup.config.ts",
+    "clean": "rm -rf dist",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

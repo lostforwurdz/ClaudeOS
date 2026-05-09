@@ -183,6 +183,17 @@ export interface TokenUsage {
 export interface CreateWorkspaceBody {
   name: string;
   dir: string;
+  /**
+   * Optional template name to seed the workspace dir with. The template's
+   * files are copied in before the workspace row is inserted; the request
+   * fails if any seed file would clobber an existing one in `dir`.
+   */
+  template?: string;
+}
+
+export interface TemplateSummary {
+  name: string;
+  description: string;
 }
 
 export interface CreateSessionBody {
@@ -193,4 +204,23 @@ export interface SubmitRunResponse {
   run_id: string;
   session_id: string;
   input_id: string;
+}
+
+export interface RunSummary {
+  id: string;
+  session_id: string;
+  input_id: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  started_at: string;
+  completed_at: string | null;
+}
+
+/**
+ * Paginated list response. `next_before` is the cursor for the next page —
+ * pass it as the `before` query param to fetch older items. `null` when
+ * there are no more items.
+ */
+export interface Page<T> {
+  items: T[];
+  next_before: string | null;
 }

@@ -17,6 +17,7 @@
     "rebuild-natives": "electron-rebuild -m ../runtime/api-server -w better-sqlite3",
     "pack": "npm run build && npm run prepack:runtime && electron-builder --linux --config electron-builder.yml",
     "test": "node --import tsx --test src/**/*.test.ts electron/**/*.test.ts",
+    "e2e": "node --import tsx --test --test-timeout=120000 e2e/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -40,6 +41,7 @@
     "cross-env": "^10.0.0",
     "electron": "^41.2.0",
     "electron-builder": "^26.8.1",
+    "playwright": "^1.50.0",
     "tsup": "^8.5.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
