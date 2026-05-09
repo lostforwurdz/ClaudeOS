@@ -109,6 +109,32 @@ function resolvePermissionHookEntry(): string | null {
   return null;
 }
 
+/**
+ * Poll the api-server's /health endpoint until it returns 200, or give up
+ * after `timeoutMs`. Without this, createMainWindow() can race the api-server
+ * spawn — the renderer mounts and calls fetch() while the server is still
+ * binding, which surfaces as a generic "Failed to fetch" in the UI.
+ */
+async function waitForApiReady(timeoutMs = 10_000): Promise<void> {
+  const url = `http://${API_HOST}:${API_PORT}/health`;
+  const deadline = Date.now() + timeoutMs;
+  let lastErr: unknown = null;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return;
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 75));
+  }
+  throw new Error(
+    `api-server did not become ready within ${timeoutMs}ms: ${
+      lastErr instanceof Error ? lastErr.message : String(lastErr)
+    }`,
+  );
+}
+
 function spawnApiServer(claudePath: string): ChildProcess {
   const apiServerEntry = resolveApiServerEntry();
   const browserMcp = resolveBrowserMcpEntry();
@@ -259,6 +285,22 @@ void app.whenReady().then(async () => {
     // the original env (e.g. token came from safeStorage).
     process.env.CLAUDE_CODE_OAUTH_TOKEN = token;
     apiServer = spawnApiServer(result.claudePath);
+
+    // Block opening the main window until /health responds — otherwise the
+    // renderer's first fetch races the server bind and dies with
+    // ERR_CONNECTION_REFUSED before any retry logic kicks in.
+    try {
+      await waitForApiReady();
+    } catch (err) {
+      console.error("[claudeos:main]", err);
+      mainWindow = createPreflightWindow({
+        ok: false,
+        code: "missing_claude_cli",
+        title: "ClaudeOS api-server failed to start",
+        body: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
     mainWindow = createMainWindow();
 
     // dcp.11: silent check + download, prompt before restart. No-op in dev.
