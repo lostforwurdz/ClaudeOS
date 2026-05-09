@@ -19,6 +19,8 @@ runtime/api-server/dist/
 
 sdk/runtime-client/dist/
 
+packages/browser-mcp/dist/
+
 .superpowers
 .worktrees/
 *.p12

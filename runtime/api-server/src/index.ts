@@ -9,6 +9,7 @@ import { z } from "zod";
 import type {
   CreateSessionBody,
   CreateWorkspaceBody,
+  McpServerConfig,
   RunRequest,
   Session,
   SubmitRunResponse,
@@ -127,9 +128,43 @@ export interface ServerOptions {
    * Defaults to `["http://localhost:5173"]`. Pass `false` to disable entirely.
    */
   corsOrigins?: string[] | false;
+  /**
+   * Absolute path to the ClaudeOS browser MCP server entry (e.g. the built
+   * `packages/browser-mcp/dist/index.mjs`). When set, every submitted run
+   * gets `claudeos-browser` injected into `mcp_servers` if not already
+   * present, so Claude Code can drive a real browser.
+   */
+  browserMcpBin?: string | null;
 }
 
 const DEFAULT_DEV_ORIGINS = ["http://localhost:5173"];
+
+/**
+ * Canonical MCP server name for the ClaudeOS browser MCP. Mirrors the
+ * `BROWSER_MCP_NAME` constant exported by `@claudeos/browser-mcp` — duplicated
+ * here as a string literal to avoid a runtime dep on that package.
+ */
+const BROWSER_MCP_NAME = "claudeos-browser";
+
+/**
+ * Inject the browser MCP into a run request's `mcp_servers` list when the
+ * api-server is configured with one. Existing user-supplied entries (and any
+ * pre-existing `claudeos-browser` entry) are preserved.
+ */
+export function applyBrowserMcpOverlay(
+  request: RunRequest,
+  browserMcpBin: string | null | undefined,
+): RunRequest {
+  if (!browserMcpBin) return request;
+  const existing = request.mcp_servers ?? [];
+  if (existing.some((s) => s.name === BROWSER_MCP_NAME)) return request;
+  const overlay: McpServerConfig = {
+    name: BROWSER_MCP_NAME,
+    type: "stdio",
+    command: ["node", browserMcpBin],
+  };
+  return { ...request, mcp_servers: [...existing, overlay] };
+}
 
 export async function createServer(opts: ServerOptions = {}): Promise<FastifyInstance> {
   const db = openDb(opts.dbPath ?? defaultDbPath());
@@ -189,7 +224,7 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
       reply.code(400);
       return { error: parsed.error.format() };
     }
-    const runRequest = parsed.data as RunRequest;
+    const runRequest = applyBrowserMcpOverlay(parsed.data as RunRequest, opts.browserMcpBin);
     const workspace = repo.getWorkspace(runRequest.workspace_id);
     if (!workspace) {
       reply.code(404);
@@ -286,7 +321,8 @@ async function main(): Promise<void> {
   const port = Number(process.env.CLAUDEOS_PORT ?? 7878);
   const host = process.env.CLAUDEOS_HOST ?? "127.0.0.1";
   const corsOrigins = parseCorsOriginsEnv(process.env.CLAUDEOS_CORS_ORIGINS);
-  const app = await createServer({ port, host, corsOrigins });
+  const browserMcpBin = process.env.CLAUDEOS_BROWSER_MCP_BIN ?? null;
+  const app = await createServer({ port, host, corsOrigins, browserMcpBin });
   app.log.info(`ClaudeOS api-server listening on ${host}:${port}`);
 }
 

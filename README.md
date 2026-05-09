@@ -16,12 +16,14 @@ ClaudeOS wraps the [Claude Code](https://claude.com/claude-code) headless CLI in
 | `sdk/bridge/` | Desktop ↔ runtime IPC contract |
 | `sdk/runtime-client/` | TypeScript client for the api-server |
 | `desktop/` | Electron shell |
+| `packages/browser-mcp/` | Stdio MCP server: Playwright-driven `navigate`/`click`/`screenshot`/`extract` tools |
 
 ## Prerequisites
 
 - Node 24
 - `claude` CLI on `PATH`
 - `CLAUDE_CODE_OAUTH_TOKEN` from a Claude Pro/Max subscription (`claude setup-token`)
+- For the browser MCP: `npx playwright install chromium` (one-time, ~150 MB)
 
 ## License
 

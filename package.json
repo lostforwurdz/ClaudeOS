@@ -24,8 +24,12 @@
     "runtime-client:install": "npm install --prefix sdk/runtime-client",
     "runtime-client:build": "npm --prefix sdk/runtime-client run build",
     "runtime-client:typecheck": "npm --prefix sdk/runtime-client run typecheck",
-    "runtime:test": "npm run harness:test && npm run api-server:test",
-    "runtime:typecheck": "npm run harness:typecheck && npm run api-server:typecheck"
+    "browser-mcp:install": "npm install --prefix packages/browser-mcp",
+    "browser-mcp:build": "npm --prefix packages/browser-mcp run build",
+    "browser-mcp:test": "npm --prefix packages/browser-mcp run test",
+    "browser-mcp:typecheck": "npm --prefix packages/browser-mcp run typecheck",
+    "runtime:test": "npm run harness:test && npm run api-server:test && npm run browser-mcp:test",
+    "runtime:typecheck": "npm run harness:typecheck && npm run api-server:typecheck && npm run browser-mcp:typecheck"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
