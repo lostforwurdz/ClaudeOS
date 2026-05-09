@@ -154,6 +154,73 @@ test("RUN_EVENT with run_started binds the claude_session_id on the slot's sessi
   assert.equal(state.byId.a.session?.claude_session_id, "claude-abc");
 });
 
+test("RUN_EVENT with run_completed captures lastTurnStats with usage + cost + duration", () => {
+  const completed: RunEvent = {
+    type: "run_completed",
+    session_id: "s",
+    input_id: "i",
+    sequence: 5,
+    timestamp: "x",
+    payload: {
+      duration_ms: 4321,
+      num_turns: 2,
+      usage: {
+        input_tokens: 1500,
+        output_tokens: 250,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 800,
+      },
+      cost_usd: 0.0123,
+      result: "ok",
+    },
+  };
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "RUN_EVENT", workspaceId: "a", event: completed },
+  ]);
+  const stats = state.byId.a.lastTurnStats;
+  assert.ok(stats, "stats must be populated on run_completed");
+  assert.equal(stats.duration_ms, 4321);
+  assert.equal(stats.num_turns, 2);
+  assert.equal(stats.usage.input_tokens, 1500);
+  assert.equal(stats.usage.cache_read_input_tokens, 800);
+  assert.equal(stats.cost_usd, 0.0123);
+});
+
+test("lastTurnStats survives the next USER_SENT (so the user can still see them while typing)", () => {
+  const completed: RunEvent = {
+    type: "run_completed",
+    session_id: "s",
+    input_id: "i",
+    sequence: 1,
+    timestamp: "x",
+    payload: {
+      duration_ms: 100,
+      num_turns: 1,
+      usage: {
+        input_tokens: 10,
+        output_tokens: 20,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      cost_usd: 0.001,
+      result: "ok",
+    },
+  };
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "RUN_EVENT", workspaceId: "a", event: completed },
+    {
+      type: "USER_SENT",
+      workspaceId: "a",
+      message: { id: "u1", role: "user", text: "again" },
+      runId: "r2",
+    },
+  ]);
+  assert.ok(state.byId.a.lastTurnStats, "previous stats must NOT be wiped on next send");
+  assert.equal(state.byId.a.lastTurnStats.cost_usd, 0.001);
+});
+
 test("RUN_FINISHED clears streaming and activeRunId, accepts an optional error", () => {
   const state = reduce([
     { type: "WORKSPACE_OPENED", workspace: ws("a") },

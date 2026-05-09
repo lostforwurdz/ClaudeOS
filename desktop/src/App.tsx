@@ -153,6 +153,26 @@ export function App() {
     [],
   );
 
+  const handleCancel = useCallback(
+    async (workspaceId: string) => {
+      const slot = state.byId[workspaceId];
+      const runId = slot?.activeRunId;
+      if (!runId) return;
+      try {
+        await api.cancelRun(runId);
+        // The harness emits run_failed on abort which the stream listener
+        // already routes through RUN_FINISHED — no need to dispatch here.
+      } catch (e) {
+        dispatch({
+          type: "ERROR_SET",
+          workspaceId,
+          error: `Cancel failed: ${String(e)}`,
+        });
+      }
+    },
+    [state.byId],
+  );
+
   const activeSlot = state.activeId ? state.byId[state.activeId] : null;
   const openWorkspaces = state.openOrder.map((id) => state.byId[id]);
 
@@ -183,6 +203,7 @@ export function App() {
             onRemoveAttachment={(path) =>
               handleRemoveAttachment(activeSlot.workspace.id, path)
             }
+            onCancel={() => void handleCancel(activeSlot.workspace.id)}
           />
         ) : (
           <Empty hasWorkspaces={workspaces.length > 0} />
@@ -359,9 +380,10 @@ interface ChatViewProps {
   onSend: (text: string) => void;
   onUpload: (files: File[]) => void;
   onRemoveAttachment: (workspacePath: string) => void;
+  onCancel: () => void;
 }
 
-function ChatView({ slot, onSend, onUpload, onRemoveAttachment }: ChatViewProps) {
+function ChatView({ slot, onSend, onUpload, onRemoveAttachment, onCancel }: ChatViewProps) {
   const [input, setInput] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -529,16 +551,65 @@ function ChatView({ slot, onSend, onUpload, onRemoveAttachment }: ChatViewProps)
             resize: "vertical",
           }}
         />
-        <button
-          onClick={submit}
-          disabled={!slot.session || !input.trim() || slot.streaming}
-          style={{ ...btn, padding: "8px 16px" }}
-        >
-          {slot.streaming ? "…" : "Send"}
-        </button>
+        {slot.streaming ? (
+          <button
+            onClick={onCancel}
+            style={{ ...btn, padding: "8px 16px", borderColor: "#5a2a2a", color: "#ff8c8c" }}
+            title="Stop the running tool/turn"
+          >
+            Cancel
+          </button>
+        ) : (
+          <button
+            onClick={submit}
+            disabled={!slot.session || !input.trim()}
+            style={{ ...btn, padding: "8px 16px" }}
+          >
+            Send
+          </button>
+        )}
       </footer>
+      {slot.lastTurnStats && !slot.streaming && (
+        <TurnStatsBar stats={slot.lastTurnStats} />
+      )}
     </>
   );
+}
+
+function TurnStatsBar({ stats }: { stats: NonNullable<WorkspaceState["lastTurnStats"]> }) {
+  const { usage, duration_ms, num_turns, cost_usd } = stats;
+  const parts = [
+    `${formatNum(usage.input_tokens)} in`,
+    `${formatNum(usage.output_tokens)} out`,
+    usage.cache_read_input_tokens > 0
+      ? `${formatNum(usage.cache_read_input_tokens)} cache`
+      : null,
+    `$${cost_usd.toFixed(4)}`,
+    `${(duration_ms / 1000).toFixed(1)}s`,
+    num_turns > 1 ? `${num_turns} turns` : null,
+  ].filter(Boolean);
+  return (
+    <div
+      style={{
+        borderTop: "1px solid #1e1e1e",
+        padding: "4px 16px",
+        fontSize: 10,
+        color: "#777",
+        fontFamily: "JetBrains Mono, Menlo, Consolas, monospace",
+        letterSpacing: 0.2,
+        background: "#0a0a0a",
+      }}
+      title="Last completed turn"
+    >
+      {parts.join(" · ")}
+    </div>
+  );
+}
+
+function formatNum(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
 }
 
 interface AttachmentStripProps {

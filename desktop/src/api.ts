@@ -63,6 +63,10 @@ export const api = {
       }),
     );
   },
+  async cancelRun(runId: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/runs/${runId}/cancel`, { method: "POST" });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  },
   streamRun(runId: string, onEvent: (event: RunEvent) => void): () => void {
     const ws = new WebSocket(`${wsBase()}/runs/${runId}/stream`);
     ws.onmessage = (msg) => {

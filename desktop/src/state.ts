@@ -16,6 +16,7 @@ import type {
   Attachment,
   RunEvent,
   Session,
+  TokenUsage,
   Workspace,
 } from "@claudeos/runtime-client/contracts";
 
@@ -35,6 +36,15 @@ export interface WorkspaceState {
   activeRunId: string | null;
   /** Files staged via the upload endpoint, waiting to ride along on the next send. */
   pendingAttachments: Attachment[];
+  /** Stats from the most recent completed run; null until at least one finishes. */
+  lastTurnStats: TurnStats | null;
+}
+
+export interface TurnStats {
+  duration_ms: number;
+  num_turns: number;
+  usage: TokenUsage;
+  cost_usd: number;
 }
 
 export interface AppState {
@@ -87,6 +97,7 @@ export function appReducer(state: AppState, action: Action): AppState {
         error: null,
         activeRunId: null,
         pendingAttachments: [],
+        lastTurnStats: null,
       };
       return {
         byId: { ...state.byId, [id]: slot },
@@ -142,6 +153,16 @@ export function appReducer(state: AppState, action: Action): AppState {
                   action.event.payload.claude_session_id || s.session.claude_session_id,
               }
             : s.session,
+        // Capture per-turn telemetry the moment the harness emits it.
+        lastTurnStats:
+          action.event.type === "run_completed"
+            ? {
+                duration_ms: action.event.payload.duration_ms,
+                num_turns: action.event.payload.num_turns,
+                usage: action.event.payload.usage,
+                cost_usd: action.event.payload.cost_usd,
+              }
+            : s.lastTurnStats,
       }));
 
     case "RUN_FINISHED":
