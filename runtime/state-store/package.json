@@ -1,11 +1,10 @@
 {
-  "name": "@holaboss/runtime-state-store",
+  "name": "@claudeos/state-store",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.0",
   "type": "module",
   "bin": {
-    "holaboss-state-store": "dist/cli.mjs",
-    "holaboss-runtime": "dist/debug-cli.mjs"
+    "claudeos-state-store": "dist/cli.mjs"
   },
   "main": "dist/index.mjs",
   "types": "dist/index.d.ts",

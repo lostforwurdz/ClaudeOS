@@ -1,49 +1,30 @@
 {
-  "name": "@holaboss/runtime-api-server",
+  "name": "@claudeos/api-server",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.0",
   "type": "module",
   "bin": {
-    "holaboss-runtime-api": "dist/index.mjs",
-    "holaboss-runtime-runtime-config": "dist/runtime-config-cli.mjs",
-    "holaboss-runtime-workspace-runtime-plan": "dist/workspace-runtime-plan.mjs",
-    "holaboss-runtime-workspace-mcp-host": "dist/workspace-mcp-host.mjs",
-    "holaboss-runtime-workspace-mcp-sidecar": "dist/workspace-mcp-sidecar.mjs"
+    "claudeos-api-server": "dist/index.mjs"
   },
   "scripts": {
     "build": "tsup --config tsup.config.ts",
     "clean": "rm -rf dist",
     "test": "node --import tsx --test src/**/*.test.ts",
-    "ts-runner": "node --import tsx src/ts-runner.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@claudeos/state-store": "file:../state-store",
     "@fastify/websocket": "^11.2.0",
-    "@holaboss/runtime-state-store": "file:../state-store",
     "@modelcontextprotocol/sdk": "^1.28.0",
-    "@sentry/node": "^10.48.0",
-    "@types/js-yaml": "^4.0.9",
     "better-sqlite3": "^12.8.0",
-    "cron-parser": "^5.5.0",
     "fastify": "^5.8.5",
-    "js-yaml": "^4.1.1",
-    "node-pty": "^1.2.0-beta.12",
-    "tar": "^7.5.13",
-    "yauzl": "^3.2.1",
     "zod": "^4.3.6"
-  },
-  "overrides": {
-    "path-to-regexp": "^8.4.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.3.0",
-    "@types/tar": "^6.1.13",
-    "@types/yauzl": "^2.10.3",
-    "@types/yazl": "^3.3.0",
     "tsup": "^8.5.0",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.3",
-    "yazl": "^3.3.1"
+    "typescript": "^5.9.3"
   }
 }
