@@ -67,6 +67,19 @@ export const api = {
     const res = await fetch(`${API_BASE}/runs/${runId}/cancel`, { method: "POST" });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   },
+  async renameWorkspace(id: string, name: string): Promise<Workspace> {
+    return jsonOrThrow(
+      await fetch(`${API_BASE}/workspaces/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      }),
+    );
+  },
+  async deleteWorkspace(id: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/workspaces/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  },
   streamRun(runId: string, onEvent: (event: RunEvent) => void): () => void {
     const ws = new WebSocket(`${wsBase()}/runs/${runId}/stream`);
     ws.onmessage = (msg) => {

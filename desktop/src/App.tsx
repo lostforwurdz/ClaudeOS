@@ -158,6 +158,46 @@ export function App() {
     [],
   );
 
+  const handleRenameWorkspace = useCallback(
+    async (workspaceId: string, currentName: string) => {
+      const next = window.prompt("Rename workspace", currentName);
+      if (!next || next.trim() === currentName) return;
+      try {
+        const updated = await api.renameWorkspace(workspaceId, next.trim());
+        setWorkspaces((prev) =>
+          prev.map((w) => (w.id === workspaceId ? updated : w)),
+        );
+        dispatch({ type: "WORKSPACE_RENAMED", workspace: updated });
+      } catch (e) {
+        setGlobalError(`Rename failed: ${String(e)}`);
+      }
+    },
+    [],
+  );
+
+  const handleDeleteWorkspace = useCallback(
+    async (workspaceId: string, name: string) => {
+      const ok = window.confirm(
+        `Delete workspace "${name}"? This drops its sessions and run history. The directory on disk is NOT touched.`,
+      );
+      if (!ok) return;
+      try {
+        await api.deleteWorkspace(workspaceId);
+        // Tear down any open WS for this workspace before clearing state.
+        const close = streamCloses.current.get(workspaceId);
+        if (close) {
+          close();
+          streamCloses.current.delete(workspaceId);
+        }
+        setWorkspaces((prev) => prev.filter((w) => w.id !== workspaceId));
+        dispatch({ type: "WORKSPACE_DELETED", workspaceId });
+      } catch (e) {
+        setGlobalError(`Delete failed: ${String(e)}`);
+      }
+    },
+    [],
+  );
+
   const handleCancel = useCallback(
     async (workspaceId: string) => {
       const slot = state.byId[workspaceId];
@@ -193,6 +233,8 @@ export function App() {
         }}
         onClose={closeWorkspaceTab}
         onNew={handleCreateWorkspace}
+        onRename={(ws) => void handleRenameWorkspace(ws.id, ws.name)}
+        onDelete={(ws) => void handleDeleteWorkspace(ws.id, ws.name)}
       />
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         {globalError && (
@@ -229,9 +271,20 @@ interface SidebarProps {
   onSelect: (ws: Workspace) => void;
   onClose: (workspaceId: string) => void;
   onNew: () => void;
+  onRename: (ws: Workspace) => void;
+  onDelete: (ws: Workspace) => void;
 }
 
-function Sidebar({ all, open, activeId, onSelect, onClose, onNew }: SidebarProps) {
+function Sidebar({
+  all,
+  open,
+  activeId,
+  onSelect,
+  onClose,
+  onNew,
+  onRename,
+  onDelete,
+}: SidebarProps) {
   const openIds = new Set(open.map((s) => s.workspace.id));
   return (
     <aside
@@ -268,6 +321,8 @@ function Sidebar({ all, open, activeId, onSelect, onClose, onNew }: SidebarProps
               active={activeId === slot.workspace.id}
               onSelect={() => onSelect(slot.workspace)}
               onClose={() => onClose(slot.workspace.id)}
+              onRename={() => onRename(slot.workspace)}
+              onDelete={() => onDelete(slot.workspace)}
             />
           ))}
         </div>
@@ -287,6 +342,8 @@ function Sidebar({ all, open, activeId, onSelect, onClose, onNew }: SidebarProps
             status={openIds.has(ws.id) ? "open" : "closed"}
             active={activeId === ws.id}
             onSelect={() => onSelect(ws)}
+            onRename={() => onRename(ws)}
+            onDelete={() => onDelete(ws)}
           />
         ))}
       </div>
@@ -300,9 +357,20 @@ interface SidebarRowProps {
   active: boolean;
   onSelect: () => void;
   onClose?: () => void;
+  onRename: () => void;
+  onDelete: () => void;
 }
 
-function SidebarRow({ workspace, status, active, onSelect, onClose }: SidebarRowProps) {
+function SidebarRow({
+  workspace,
+  status,
+  active,
+  onSelect,
+  onClose,
+  onRename,
+  onDelete,
+}: SidebarRowProps) {
+  const [hovered, setHovered] = useState(false);
   const dotColor = {
     streaming: "#5fdcb6",
     error: "#ff6464",
@@ -313,11 +381,13 @@ function SidebarRow({ workspace, status, active, onSelect, onClose }: SidebarRow
   return (
     <div
       onClick={onSelect}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         padding: "6px 14px",
         display: "flex",
         alignItems: "center",
-        gap: 8,
+        gap: 6,
         cursor: "pointer",
         background: active ? "#1a1a1a" : "transparent",
         fontSize: 12,
@@ -344,6 +414,30 @@ function SidebarRow({ workspace, status, active, onSelect, onClose }: SidebarRow
       >
         {workspace.name}
       </span>
+      {hovered && (
+        <>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onRename();
+            }}
+            style={{ ...miniBtn, opacity: 0.5, fontSize: 12 }}
+            title="Rename workspace"
+          >
+            ✎
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            style={{ ...miniBtn, opacity: 0.5, fontSize: 12, color: "#ff8c8c" }}
+            title="Delete workspace (cascades sessions + runs)"
+          >
+            🗑
+          </button>
+        </>
+      )}
       {onClose && (
         <button
           onClick={(e) => {

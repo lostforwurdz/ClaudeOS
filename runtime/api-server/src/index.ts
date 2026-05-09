@@ -31,6 +31,10 @@ const CreateWorkspaceSchema = z.object({
   dir: z.string().min(1),
 });
 
+const UpdateWorkspaceSchema = z.object({
+  name: z.string().min(1),
+});
+
 const CreateSessionSchema = z.object({
   workspace_id: z.string().min(1),
 });
@@ -60,6 +64,8 @@ interface Repo {
   createWorkspace(body: CreateWorkspaceBody): Workspace;
   listWorkspaces(): Workspace[];
   getWorkspace(id: string): Workspace | null;
+  renameWorkspace(id: string, name: string): Workspace | null;
+  deleteWorkspace(id: string): boolean;
   createSession(body: CreateSessionBody): Session;
   getSession(id: string): Session | null;
 }
@@ -90,6 +96,19 @@ function createRepo(db: DatabaseType): Repo {
         .prepare(`SELECT id, name, dir, created_at, updated_at FROM workspaces WHERE id = ?`)
         .get(id) as Workspace | undefined;
       return row ?? null;
+    },
+    renameWorkspace(id, name) {
+      const now = new Date().toISOString();
+      const result = db
+        .prepare(`UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?`)
+        .run(name, now, id);
+      if (result.changes === 0) return null;
+      return this.getWorkspace(id);
+    },
+    deleteWorkspace(id) {
+      // ON DELETE CASCADE drops sessions → runs → run_events automatically.
+      const result = db.prepare(`DELETE FROM workspaces WHERE id = ?`).run(id);
+      return result.changes > 0;
     },
     createSession(body) {
       const now = new Date().toISOString();
@@ -203,6 +222,26 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
     if (!ws) return reply.code(404).send({ error: "workspace not found" });
     return ws;
   });
+
+  app.patch<{ Params: { id: string } }>(
+    "/workspaces/:id",
+    async (request, reply) => {
+      const parsed = UpdateWorkspaceSchema.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: parsed.error.format() });
+      const updated = repo.renameWorkspace(request.params.id, parsed.data.name);
+      if (!updated) return reply.code(404).send({ error: "workspace not found" });
+      return updated;
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    "/workspaces/:id",
+    async (request, reply) => {
+      const ok = repo.deleteWorkspace(request.params.id);
+      if (!ok) return reply.code(404).send({ error: "workspace not found" });
+      return { ok: true };
+    },
+  );
 
   app.post<{ Params: { id: string } }>(
     "/workspaces/:id/uploads",

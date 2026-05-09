@@ -64,6 +64,8 @@ export type Action =
   | { type: "WORKSPACE_OPENED"; workspace: Workspace }
   | { type: "WORKSPACE_CLOSED"; workspaceId: string }
   | { type: "WORKSPACE_ACTIVATED"; workspaceId: string }
+  | { type: "WORKSPACE_RENAMED"; workspace: Workspace }
+  | { type: "WORKSPACE_DELETED"; workspaceId: string }
   | { type: "SESSION_BOUND"; workspaceId: string; session: Session }
   | {
       type: "USER_SENT";
@@ -122,6 +124,30 @@ export function appReducer(state: AppState, action: Action): AppState {
     case "WORKSPACE_ACTIVATED": {
       if (!state.byId[action.workspaceId]) return state;
       return { ...state, activeId: action.workspaceId };
+    }
+
+    case "WORKSPACE_RENAMED": {
+      // Rename can target a workspace that's not currently open; the side
+      // effect of refreshing the sidebar list lives in App.tsx, but if it IS
+      // open we update the slot's embedded workspace too.
+      const id = action.workspace.id;
+      if (!state.byId[id]) return state;
+      return updateSlot(state, id, (s) => ({ ...s, workspace: action.workspace }));
+    }
+
+    case "WORKSPACE_DELETED": {
+      // Same shape as WORKSPACE_CLOSED for the open-tab list — drop the slot
+      // if open. The remote workspace list is owned by App.tsx local state,
+      // so deletion of a NOT-open workspace is a no-op here.
+      const id = action.workspaceId;
+      if (!state.byId[id]) return state;
+      const { [id]: _removed, ...rest } = state.byId;
+      const order = state.openOrder.filter((x) => x !== id);
+      const activeId =
+        state.activeId === id
+          ? (order[order.length - 1] ?? null)
+          : state.activeId;
+      return { byId: rest, openOrder: order, activeId };
     }
 
     case "SESSION_BOUND":

@@ -94,6 +94,41 @@ test("closing the last open workspace clears activeId", () => {
   assert.deepEqual(state.openOrder, []);
 });
 
+test("WORKSPACE_RENAMED updates the embedded workspace on an open slot", () => {
+  const renamed = { ...ws("a"), name: "renamed!" };
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a", "old") },
+    { type: "WORKSPACE_RENAMED", workspace: renamed },
+  ]);
+  assert.equal(state.byId.a.workspace.name, "renamed!");
+});
+
+test("WORKSPACE_RENAMED is a no-op for a workspace that's not currently open", () => {
+  const before = reduce([{ type: "WORKSPACE_OPENED", workspace: ws("a") }]);
+  const after = appReducer(before, {
+    type: "WORKSPACE_RENAMED",
+    workspace: { ...ws("not-open-id"), name: "new" },
+  });
+  assert.equal(after, before, "reducer must short-circuit when the slot doesn't exist");
+});
+
+test("WORKSPACE_DELETED drops the slot and falls back to the previous active tab", () => {
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "WORKSPACE_OPENED", workspace: ws("b") },
+    { type: "WORKSPACE_DELETED", workspaceId: "b" },
+  ]);
+  assert.equal(state.byId.b, undefined);
+  assert.deepEqual(state.openOrder, ["a"]);
+  assert.equal(state.activeId, "a");
+});
+
+test("WORKSPACE_DELETED for a not-open workspace is a no-op", () => {
+  const before = reduce([{ type: "WORKSPACE_OPENED", workspace: ws("a") }]);
+  const after = appReducer(before, { type: "WORKSPACE_DELETED", workspaceId: "ghost" });
+  assert.equal(after, before);
+});
+
 test("USER_SENT appends a message, sets streaming, clears prior error, records runId", () => {
   const state = reduce([
     { type: "WORKSPACE_OPENED", workspace: ws("a") },
