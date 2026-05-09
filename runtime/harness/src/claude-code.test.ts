@@ -145,6 +145,46 @@ test("tool_use blocks in assistant messages emit tool_call events", () => {
   assert.equal(ev.payload.message_id, "msg-3");
 });
 
+// ajr.2: Subagent orchestration is provided by Claude Code's built-in `Task`
+// tool, not by a ClaudeOS-level harness primitive. The harness routes Task
+// tool calls identically to every other tool (Bash, Edit, Read, etc.) — no
+// special casing. This test pins that contract so future contributors don't
+// build a parallel orchestration layer "for subagents."
+test("Task tool calls route through the harness like any other tool (subagent contract)", () => {
+  const events = parseStream(REQ, [
+    j({
+      type: "assistant",
+      message: {
+        id: "msg-task",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_task1",
+            name: "Task",
+            input: {
+              subagent_type: "general-purpose",
+              description: "Find recent api-server changes",
+              prompt: "Search the codebase for changes to runtime/api-server in the last week",
+            },
+          },
+        ],
+      },
+    }),
+  ]);
+
+  assert.equal(events.length, 1);
+  const ev = events[0];
+  assert.equal(ev.type, "tool_call");
+  if (ev.type !== "tool_call") throw new Error("type narrow");
+  assert.equal(ev.payload.name, "Task");
+  // Subagent input is preserved verbatim — the UI gets the full subagent
+  // request shape (subagent_type, description, prompt) for richer rendering.
+  const input = ev.payload.input as { subagent_type: string; description: string; prompt: string };
+  assert.equal(input.subagent_type, "general-purpose");
+  assert.match(input.prompt, /Search the codebase/);
+});
+
 test("tool_result blocks in user messages emit tool_result events", () => {
   const events = parseStream(REQ, [
     j({
