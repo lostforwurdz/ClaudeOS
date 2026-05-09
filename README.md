@@ -25,20 +25,18 @@ ClaudeOS wraps the [Claude Code](https://claude.com/claude-code) headless CLI in
 - `CLAUDE_CODE_OAUTH_TOKEN` from a Claude Pro/Max subscription (`claude setup-token`)
 - For the browser MCP: `npx playwright install chromium` (one-time, ~150 MB)
 
-If `claude` or the OAuth token are missing, the desktop app shows a preflight error overlay with instructions instead of starting.
+On first launch the desktop app opens a paste-token window if no `CLAUDE_CODE_OAUTH_TOKEN` is set; the token is persisted via Electron's `safeStorage` (libsecret on this Debian host) and auto-injected on subsequent launches.
 
 ## Packaging
 
-Per-OS installer builds are wired through `electron-builder`. Run from the repo root after one-time setup:
+Single-machine, Debian Linux x64. Run from the repo root after one-time setup:
 
 ```bash
 npm run desktop:install   # once
-npm --prefix desktop run pack:linux   # AppImage + .deb
-npm --prefix desktop run pack:mac     # .dmg (codesigning not configured)
-npm --prefix desktop run pack:win     # NSIS .exe
+npm --prefix desktop run pack   # AppImage + .deb in desktop/build/
 ```
 
-Output lands in `desktop/build/`. The api-server and browser-mcp dist trees are bundled as `extraResources`; native modules (`better-sqlite3`) are unpacked from the asar so they can load at runtime. Today the packaged app expects the user to have `claude` on PATH — bundling the CLI itself is tracked as a follow-up.
+The api-server, browser-mcp, and pinned `@anthropic-ai/claude-code` CLI are bundled as `extraResources`; `better-sqlite3` is unpacked from the asar so it can load at runtime. `electron-updater` checks for updates from the matching GitHub Releases feed on launch.
 
 ## License
 

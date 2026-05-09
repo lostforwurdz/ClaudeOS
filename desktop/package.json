@@ -14,10 +14,7 @@
     "build:electron": "tsup electron/main.ts electron/preflight.ts electron/bundled-claude.ts electron/auth-store.ts electron/auto-updater.ts electron/preload-setup.ts --format cjs --out-dir out/electron --minify",
     "build": "npm run build:renderer && npm run build:electron",
     "prepack:runtime": "npm --prefix ../runtime/api-server run build && npm --prefix ../packages/browser-mcp run build && npm --prefix ../packages/claude-cli run install:bundle",
-    "pack:linux": "npm run build && npm run prepack:runtime && electron-builder --linux --config electron-builder.yml",
-    "pack:mac": "npm run build && npm run prepack:runtime && electron-builder --mac --config electron-builder.yml",
-    "pack:win": "npm run build && npm run prepack:runtime && electron-builder --win --config electron-builder.yml",
-    "pack": "npm run build && npm run prepack:runtime && electron-builder --config electron-builder.yml",
+    "pack": "npm run build && npm run prepack:runtime && electron-builder --linux --config electron-builder.yml",
     "test": "node --import tsx --test src/**/*.test.ts electron/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },

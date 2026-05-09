@@ -1,24 +1,19 @@
 # electron-builder config for ClaudeOS.
 #
+# Single-machine, single-user, Debian Linux x64 only. Cross-platform targets
+# and codesigning are intentionally out of scope — this app is published by,
+# and consumed by, one user on one host.
+#
 # Bundles the desktop renderer + electron main, the api-server and browser-mcp
-# dist trees, plus the pinned `@anthropic-ai/claude-code` binary (dcp.9), into
-# per-OS installers. Each per-platform installer carries the matching native
-# binary (`pack:linux`/`pack:mac`/`pack:win` must each run on a host whose
-# `npm install` resolves the right optional dependency).
+# dist trees, plus the pinned `@anthropic-ai/claude-code` binary (dcp.9).
 
 appId: com.claudeos.app
 productName: ClaudeOS
 copyright: "(c) ClaudeOS contributors"
 
-# Auto-update feed (dcp.11). electron-builder writes the matching `latest*.yml`
-# manifests next to the installer, and electron-updater reads from this
-# provider at runtime. Releases must be published to the matching GitHub repo
-# (see release pipeline / pack:* scripts) for updates to surface.
-#
-# Codesigning is NOT yet configured here; until each platform target is signed,
-# update installs will trip OS gatekeepers (macOS Gatekeeper, Windows
-# SmartScreen). Track signing setup as a follow-up before enabling auto-update
-# for non-developer users.
+# Auto-update feed (dcp.11). electron-builder writes `latest-linux.yml` next
+# to the installer, and electron-updater reads from this provider at runtime.
+# Releases must be published to this repo for updates to surface.
 publish:
   provider: github
   owner: lostforwurdz
@@ -61,31 +56,10 @@ asar: true
 asarUnpack:
   - "node_modules/better-sqlite3/**/*"
 
-# -------------------------------------------------------------------------
-# Per-OS targets
-# -------------------------------------------------------------------------
-
-mac:
-  category: public.app-category.developer-tools
-  target:
-    - target: dmg
-      arch: [arm64, x64]
-  hardenedRuntime: true
-  gatekeeperAssess: false
-
-win:
-  target:
-    - target: nsis
-      arch: [x64, arm64]
-
 linux:
   category: Development
   target:
     - target: AppImage
-      arch: [x64, arm64]
+      arch: [x64]
     - target: deb
-      arch: [x64, arm64]
-
-nsis:
-  oneClick: false
-  allowToChangeInstallationDirectory: true
+      arch: [x64]
