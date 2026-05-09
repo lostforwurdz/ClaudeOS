@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import corsPlugin from "@fastify/cors";
 import websocketPlugin from "@fastify/websocket";
 import type { Database as DatabaseType } from "better-sqlite3";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -120,7 +121,15 @@ export interface ServerOptions {
   port?: number;
   host?: string;
   dbPath?: string;
+  /**
+   * Allowed CORS origins for the Vite dev renderer.
+   * Production Electron loads `file://` (no Origin header) so CORS is a no-op there.
+   * Defaults to `["http://localhost:5173"]`. Pass `false` to disable entirely.
+   */
+  corsOrigins?: string[] | false;
 }
+
+const DEFAULT_DEV_ORIGINS = ["http://localhost:5173"];
 
 export async function createServer(opts: ServerOptions = {}): Promise<FastifyInstance> {
   const db = openDb(opts.dbPath ?? defaultDbPath());
@@ -129,6 +138,12 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   const runs = new RunManager(db, bus);
 
   const app = Fastify({ logger: { level: "info" } });
+
+  if (opts.corsOrigins !== false) {
+    const origins = opts.corsOrigins ?? DEFAULT_DEV_ORIGINS;
+    await app.register(corsPlugin, { origin: origins });
+  }
+
   await app.register(websocketPlugin);
 
   app.get("/health", async () => ({ ok: true }));
@@ -270,8 +285,18 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
 async function main(): Promise<void> {
   const port = Number(process.env.CLAUDEOS_PORT ?? 7878);
   const host = process.env.CLAUDEOS_HOST ?? "127.0.0.1";
-  const app = await createServer({ port, host });
+  const corsOrigins = parseCorsOriginsEnv(process.env.CLAUDEOS_CORS_ORIGINS);
+  const app = await createServer({ port, host, corsOrigins });
   app.log.info(`ClaudeOS api-server listening on ${host}:${port}`);
+}
+
+function parseCorsOriginsEnv(value: string | undefined): string[] | false | undefined {
+  if (value === undefined) return undefined;
+  if (value === "false" || value === "off") return false;
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
