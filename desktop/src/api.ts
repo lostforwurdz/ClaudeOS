@@ -2,8 +2,10 @@ import type {
   Attachment,
   CreateSessionBody,
   CreateWorkspaceBody,
+  Page,
   RunEvent,
   RunRequest,
+  RunSummary,
   Session,
   SubmitRunResponse,
   Workspace,
@@ -91,6 +93,35 @@ export const api = {
     });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   },
+  // -- History (xh5.2) ------------------------------------------------------
+  async listSessions(
+    workspaceId: string,
+    opts: { limit?: number; before?: string } = {},
+  ): Promise<Page<Session>> {
+    const params = new URLSearchParams();
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts.before) params.set("before", opts.before);
+    const qs = params.toString();
+    return jsonOrThrow(
+      await fetch(`${API_BASE}/workspaces/${workspaceId}/sessions${qs ? `?${qs}` : ""}`),
+    );
+  },
+  async listRunsForSession(
+    sessionId: string,
+    opts: { limit?: number; before?: string } = {},
+  ): Promise<Page<RunSummary>> {
+    const params = new URLSearchParams();
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts.before) params.set("before", opts.before);
+    const qs = params.toString();
+    return jsonOrThrow(
+      await fetch(`${API_BASE}/sessions/${sessionId}/runs${qs ? `?${qs}` : ""}`),
+    );
+  },
+  async listRunEvents(runId: string): Promise<RunEvent[]> {
+    return jsonOrThrow(await fetch(`${API_BASE}/runs/${runId}/events`));
+  },
+
   streamRun(runId: string, onEvent: (event: RunEvent) => void): () => void {
     const ws = new WebSocket(`${wsBase()}/runs/${runId}/stream`);
     ws.onmessage = (msg) => {

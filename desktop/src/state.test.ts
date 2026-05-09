@@ -463,3 +463,37 @@ test("applyEvent: tool_call and tool_result append distinct tool messages", () =
   assert.match(out[0].text, /Bash/);
   assert.match(out[1].text, /^← ok/);
 });
+
+// xh5.2: history mode flag
+test("HISTORY_TOGGLED flips the per-workspace historyMode flag", () => {
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "HISTORY_TOGGLED", workspaceId: "a" },
+  ]);
+  assert.equal(state.byId.a.historyMode, true);
+
+  const off = appReducer(state, { type: "HISTORY_TOGGLED", workspaceId: "a" });
+  assert.equal(off.byId.a.historyMode, false);
+});
+
+test("HISTORY_TOGGLED with explicit on:true sets it deterministically (no flip)", () => {
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "HISTORY_TOGGLED", workspaceId: "a", on: true },
+    { type: "HISTORY_TOGGLED", workspaceId: "a", on: true },
+  ]);
+  assert.equal(state.byId.a.historyMode, true);
+});
+
+test("HISTORY_TOGGLED on a closed workspace is a no-op", () => {
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "HISTORY_TOGGLED", workspaceId: "missing" },
+  ]);
+  assert.equal(state.byId.a.historyMode, false);
+});
+
+test("opening a workspace defaults historyMode to false", () => {
+  const state = reduce([{ type: "WORKSPACE_OPENED", workspace: ws("a") }]);
+  assert.equal(state.byId.a.historyMode, false);
+});

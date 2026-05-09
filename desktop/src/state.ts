@@ -50,6 +50,13 @@ export interface WorkspaceState {
    * user picks allow/deny.
    */
   pendingPermission: PendingPermission | null;
+  /**
+   * xh5.2: when true the workspace pane shows the conversation history
+   * panel (read-only browser of past sessions/runs) instead of the live
+   * chat. Local data — past sessions, expanded runs, replayed events —
+   * lives inside the HistoryPanel component, not here.
+   */
+  historyMode: boolean;
 }
 
 export interface PendingPermission {
@@ -102,7 +109,8 @@ export type Action =
       workspaceId: string;
       workspacePath: string;
     }
-  | { type: "PERMISSION_RESOLVED"; workspaceId: string };
+  | { type: "PERMISSION_RESOLVED"; workspaceId: string }
+  | { type: "HISTORY_TOGGLED"; workspaceId: string; on?: boolean };
 
 export function appReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -122,6 +130,7 @@ export function appReducer(state: AppState, action: Action): AppState {
         pendingAttachments: [],
         lastTurnStats: null,
         pendingPermission: null,
+        historyMode: false,
       };
       return {
         byId: { ...state.byId, [id]: slot },
@@ -268,6 +277,12 @@ export function appReducer(state: AppState, action: Action): AppState {
       return updateSlot(state, action.workspaceId, (s) => ({
         ...s,
         pendingPermission: null,
+      }));
+
+    case "HISTORY_TOGGLED":
+      return updateSlot(state, action.workspaceId, (s) => ({
+        ...s,
+        historyMode: action.on ?? !s.historyMode,
       }));
 
     default: {
