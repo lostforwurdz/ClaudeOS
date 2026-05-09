@@ -25,6 +25,21 @@ ClaudeOS wraps the [Claude Code](https://claude.com/claude-code) headless CLI in
 - `CLAUDE_CODE_OAUTH_TOKEN` from a Claude Pro/Max subscription (`claude setup-token`)
 - For the browser MCP: `npx playwright install chromium` (one-time, ~150 MB)
 
+If `claude` or the OAuth token are missing, the desktop app shows a preflight error overlay with instructions instead of starting.
+
+## Packaging
+
+Per-OS installer builds are wired through `electron-builder`. Run from the repo root after one-time setup:
+
+```bash
+npm run desktop:install   # once
+npm --prefix desktop run pack:linux   # AppImage + .deb
+npm --prefix desktop run pack:mac     # .dmg (codesigning not configured)
+npm --prefix desktop run pack:win     # NSIS .exe
+```
+
+Output lands in `desktop/build/`. The api-server and browser-mcp dist trees are bundled as `extraResources`; native modules (`better-sqlite3`) are unpacked from the asar so they can load at runtime. Today the packaged app expects the user to have `claude` on PATH — bundling the CLI itself is tracked as a follow-up.
+
 ## License
 
 MIT (inherited from holaOS).

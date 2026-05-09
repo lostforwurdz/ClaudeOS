@@ -57,7 +57,11 @@ export async function runHarness(
     const useStreamInput = needsStreamInput(request);
     const args = buildArgs(request, options, mcpConfig, useStreamInput);
     const env = buildEnv(options);
-    const binary = options.claudeBinary ?? "claude";
+    // Falling back to the env var matters for packaged Electron: the GUI
+    // process often inherits a stripped PATH where `claude` isn't visible,
+    // so the desktop main process resolves the absolute path and exports it.
+    const binary =
+      options.claudeBinary ?? process.env.CLAUDEOS_CLAUDE_BINARY ?? "claude";
 
     // Always pipe stdin so the type narrows to a writable stream regardless of
     // whether we send a stream-json user message. In text-input mode we just

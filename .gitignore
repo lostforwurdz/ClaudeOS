@@ -13,6 +13,7 @@ node_modules/
 
 desktop/out/
 desktop/.cache/
+desktop/build/
 
 runtime/harness/dist/
 runtime/api-server/dist/
