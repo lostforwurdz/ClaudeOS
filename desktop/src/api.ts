@@ -1,4 +1,5 @@
 import type {
+  ActiveRun,
   Attachment,
   CreateSessionBody,
   CreateWorkspaceBody,
@@ -142,6 +143,9 @@ export const api = {
   },
   async listRunEvents(runId: string): Promise<RunEvent[]> {
     return jsonOrThrow(await fetch(`${API_BASE}/runs/${runId}/events`));
+  },
+  async listActiveRuns(): Promise<ActiveRun[]> {
+    return jsonOrThrow(await fetch(`${API_BASE}/active-runs`));
   },
 
   streamRun(runId: string, onEvent: (event: RunEvent) => void): () => void {

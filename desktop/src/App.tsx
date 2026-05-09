@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import "highlight.js/styles/atom-one-dark.css";
 
 import type {
+  ActiveRun,
   Attachment,
   RunEvent,
   RunSummary,
@@ -156,7 +157,11 @@ export function App() {
   }, [openWorkspace]);
 
   const handleSend = useCallback(
-    async (workspaceId: string, text: string) => {
+    async (
+      workspaceId: string,
+      text: string,
+      opts?: { modeOverride?: string; onCompleted?: () => void },
+    ) => {
       const slot = state.byId[workspaceId];
       if (!slot || !slot.session) return;
       const trimmed = text.trim();
@@ -171,10 +176,10 @@ export function App() {
 
       const attachments = slot.pendingAttachments;
 
-      // rec-7: merge the active mode's preset into the run request. Empty
-      // strings collapse to absent fields so the api-server's defaults
-      // apply when the user is in "default" mode.
-      const mode = findMode(slot.modeId);
+      // rec-7: merge the active mode's preset into the run request. The
+      // optional `modeOverride` (used by the bsky-3 quality-loop chain)
+      // wins over the slot's persistent mode for this single send.
+      const mode = findMode(opts?.modeOverride ?? slot.modeId);
       try {
         const submitted = await api.submitRun({
           workspace_id: workspaceId,
@@ -208,6 +213,7 @@ export function App() {
               c();
               streamCloses.current.delete(workspaceId);
             }
+            if (event.type === "run_completed") opts?.onCompleted?.();
           }
         });
         streamCloses.current.set(workspaceId, close);
@@ -273,6 +279,38 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const handleOpenSettings = useCallback(() => setSettingsOpen(true), []);
 
+  // bsky-1: Mission Control mode swaps the main pane to a cross-workspace
+  // dashboard of every active run, regardless of which workspace tab is
+  // active. The state lives at App level since it's not workspace-scoped.
+  const [missionMode, setMissionMode] = useState(false);
+
+  // bsky-3: built-in implement-then-review pipeline. Dispatches the user's
+  // prompt as an `implement` run; on completion, auto-dispatches a
+  // `review` follow-up via the existing session (Claude --resume), so
+  // the reviewer agent sees the full prior conversation including the
+  // diff it's reviewing. Pure client-side chain — no new endpoints.
+  const REVIEW_FOLLOW_UP =
+    "Now switch hats and review the work you just did. Critique it for " +
+    "correctness, missed edge cases, weak tests, brittle assumptions, and " +
+    "anything that would surprise a future maintainer. End with a verdict " +
+    "tag on its own line: APPROVE or CHANGES_REQUESTED, plus a one-line reason.";
+  const handleQualityLoop = useCallback(
+    (workspaceId: string, prompt: string) => {
+      void handleSendRef.current?.(workspaceId, prompt, {
+        modeOverride: "implement",
+        onCompleted: () => {
+          void handleSendRef.current?.(workspaceId, REVIEW_FOLLOW_UP, {
+            modeOverride: "review",
+          });
+        },
+      });
+    },
+    [],
+  );
+  // handleSend is defined later — keep a ref so handleQualityLoop above
+  // doesn't form a temporal dead-zone in its useCallback closure.
+  const handleSendRef = useRef<typeof handleSend | null>(null);
+
   // rec-3 (kobramaz-a17.3): fan-out state. Per-workspace map of in-flight
   // parallel runs so each workspace tab keeps its own batch independent.
   // Tiles poll the api-server for per-run status; no WebSocket multiplex.
@@ -281,6 +319,8 @@ export function App() {
   >({});
   const [fanOutPromptOpen, setFanOutPromptOpen] = useState(false);
   const handleOpenFanOut = useCallback(() => setFanOutPromptOpen(true), []);
+  const [qualityLoopPromptOpen, setQualityLoopPromptOpen] = useState(false);
+  const handleOpenQualityLoop = useCallback(() => setQualityLoopPromptOpen(true), []);
   const handleDispatchFanOut = useCallback(
     async (workspaceId: string, prompts: FanOutPromptInput[]) => {
       setFanOutPromptOpen(false);
@@ -410,6 +450,13 @@ export function App() {
     [state.byId],
   );
 
+  // bsky-3: keep handleSendRef pointed at the latest handleSend so the
+  // quality-loop closure can dispatch follow-ups without a forward-ref
+  // problem (handleQualityLoop is defined before handleSend).
+  useEffect(() => {
+    handleSendRef.current = handleSend;
+  }, [handleSend]);
+
   const activeSlot = state.activeId ? state.byId[state.activeId] : null;
 
   // xh5.4: global keyboard shortcuts. Registered on window so they fire from
@@ -490,7 +537,11 @@ export function App() {
         all={workspaces}
         open={openWorkspaces}
         activeId={state.activeId}
+        missionMode={missionMode}
+        onToggleMission={() => setMissionMode((m) => !m)}
         onSelect={(ws) => {
+          // Selecting a workspace exits mission mode (the user wants chat).
+          setMissionMode(false);
           if (state.byId[ws.id]) activateWorkspace(ws.id);
           else void openWorkspace(ws);
         }}
@@ -523,6 +574,29 @@ export function App() {
           onSubmit={(prompts) => void handleDispatchFanOut(activeSlot.workspace.id, prompts)}
         />
       )}
+      {qualityLoopPromptOpen && activeSlot && (
+        <PromptDialog
+          prompt={{
+            title: "Quality loop — implement, then review",
+            submitLabel: "Run loop",
+            fields: [
+              {
+                name: "instruction",
+                label:
+                  "What to implement. The same agent will then review its own work in a follow-up turn.",
+                placeholder:
+                  "Refactor the auth middleware to extract token verification into a separate module",
+              },
+            ],
+            onSubmit: (values) => {
+              setQualityLoopPromptOpen(false);
+              const text = values.instruction?.trim();
+              if (text) handleQualityLoop(activeSlot.workspace.id, text);
+            },
+          }}
+          onCancel={() => setQualityLoopPromptOpen(false)}
+        />
+      )}
       {showShortcutsHelp && (
         <ShortcutsCheatsheet onClose={() => setShowShortcutsHelp(false)} />
       )}
@@ -532,7 +606,17 @@ export function App() {
             {globalError}
           </div>
         )}
-        {activeSlot ? (
+        {missionMode ? (
+          <MissionControl
+            onSelectWorkspace={(workspaceId) => {
+              setMissionMode(false);
+              const ws = workspaces.find((w) => w.id === workspaceId);
+              if (!ws) return;
+              if (state.byId[workspaceId]) activateWorkspace(workspaceId);
+              else void openWorkspace(ws);
+            }}
+          />
+        ) : activeSlot ? (
           <ChatView
             slot={activeSlot}
             onSend={(text) => void handleSend(activeSlot.workspace.id, text)}
@@ -557,6 +641,7 @@ export function App() {
                 modeId,
               })
             }
+            onOpenQualityLoop={handleOpenQualityLoop}
             onOpenFanOut={handleOpenFanOut}
             fanOut={fanOutByWorkspace[activeSlot.workspace.id]}
             onUpdateFanOut={(runs) =>
@@ -583,6 +668,8 @@ interface SidebarProps {
   all: Workspace[];
   open: WorkspaceState[];
   activeId: string | null;
+  missionMode: boolean;
+  onToggleMission: () => void;
   onSelect: (ws: Workspace) => void;
   onClose: (workspaceId: string) => void;
   onNew: () => void;
@@ -595,6 +682,8 @@ function Sidebar({
   all,
   open,
   activeId,
+  missionMode,
+  onToggleMission,
   onSelect,
   onClose,
   onNew,
@@ -625,6 +714,21 @@ function Sidebar({
       >
         <strong style={{ fontSize: 13, letterSpacing: -0.2 }}>ClaudeOS</strong>
         <div style={{ display: "flex", gap: 4 }}>
+          <button
+            onClick={onToggleMission}
+            style={{
+              ...btn,
+              ...(missionMode
+                ? {
+                    background: "var(--infoBg)",
+                    border: "1px solid var(--infoBorder)",
+                  }
+                : {}),
+            }}
+            title="Mission Control — every active run across workspaces"
+          >
+            📡
+          </button>
           <button onClick={onOpenSettings} style={btn} title="Settings">⚙</button>
           <button onClick={onNew} style={btn} title="Create new workspace (Ctrl+Shift+N)">+</button>
         </div>
@@ -808,6 +912,7 @@ interface ChatViewProps {
   onClearFanOut: () => void;
   onForkSession: (claudeSessionId: string) => void;
   onModeChange: (modeId: string) => void;
+  onOpenQualityLoop: () => void;
 }
 
 function ChatView({
@@ -824,6 +929,7 @@ function ChatView({
   onClearFanOut,
   onForkSession,
   onModeChange,
+  onOpenQualityLoop,
 }: ChatViewProps) {
   const [input, setInput] = useState("");
   const [dragActive, setDragActive] = useState(false);
@@ -888,6 +994,21 @@ function ChatView({
                 ` ↔ ${slot.session.claude_session_id.slice(0, 8)}…`}
             </span>
           )}
+          <button
+            onClick={onOpenQualityLoop}
+            title="Implement → review pipeline (the agent reviews its own work)"
+            style={{
+              background: "var(--raisedAlt)",
+              color: "var(--text)",
+              border: "1px solid var(--borderStrong)",
+              borderRadius: 4,
+              padding: "3px 9px",
+              fontSize: 11,
+              cursor: "pointer",
+            }}
+          >
+            Quality loop
+          </button>
           <button
             onClick={onOpenFanOut}
             title="Run several prompts in parallel git worktrees (Fan-out)"
@@ -1366,6 +1487,149 @@ function RunEventsView({ runId }: { runId: string }) {
   );
 }
 
+// bsky-1 (kobramaz-xzj.1): Mission Control — cross-workspace dashboard of
+// every run currently in flight. Polls GET /active-runs every 2s. Each
+// row is a click target that activates the run's workspace.
+function MissionControl({
+  onSelectWorkspace,
+}: {
+  onSelectWorkspace: (workspaceId: string) => void;
+}) {
+  const [rows, setRows] = useState<ActiveRun[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const items = await api.listActiveRuns();
+        if (!cancelled) setRows(items);
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      }
+    };
+    void tick();
+    const id = setInterval(() => void tick(), 2000);
+    const clockId = setInterval(() => setNow(Date.now()), 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      clearInterval(clockId);
+    };
+  }, []);
+
+  return (
+    <main
+      style={{
+        flex: 1,
+        overflowY: "auto",
+        padding: 18,
+        background: "var(--bg)",
+        color: "var(--text)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          marginBottom: 14,
+        }}
+      >
+        <strong style={{ fontSize: 15 }}>Mission Control</strong>
+        <span style={{ fontSize: 11, opacity: 0.5 }}>
+          Every active run across all workspaces · refreshes every 2s
+        </span>
+      </div>
+      {error && (
+        <div style={{ color: "var(--errorMuted)", fontSize: 12, marginBottom: 12 }}>
+          {error}
+        </div>
+      )}
+      {rows === null && !error && (
+        <div style={{ opacity: 0.5, fontSize: 12 }}>Loading…</div>
+      )}
+      {rows && rows.length === 0 && (
+        <div style={{ opacity: 0.5, fontSize: 12 }}>
+          No active runs. Send a chat or dispatch a fan-out to populate this view.
+        </div>
+      )}
+      {rows && rows.length > 0 && (
+        <table
+          style={{
+            width: "100%",
+            borderCollapse: "collapse",
+            fontSize: 12,
+          }}
+        >
+          <thead>
+            <tr style={{ textAlign: "left", color: "var(--mute)", fontSize: 11 }}>
+              <th style={missionTh}>Workspace</th>
+              <th style={missionTh}>Run id</th>
+              <th style={missionTh}>Session</th>
+              <th style={missionTh}>Started</th>
+              <th style={missionTh}>Age</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr
+                key={r.run.id}
+                onClick={() => onSelectWorkspace(r.workspace_id)}
+                style={{
+                  cursor: "pointer",
+                  borderTop: "1px solid var(--border)",
+                }}
+                title="Open this run's workspace"
+              >
+                <td style={missionTd}>
+                  <span style={{ color: "var(--info)", marginRight: 6 }}>●</span>
+                  {r.workspace_name}
+                </td>
+                <td style={{ ...missionTd, fontFamily: "monospace", opacity: 0.7 }}>
+                  {r.run.id.slice(0, 8)}
+                </td>
+                <td style={{ ...missionTd, fontFamily: "monospace", opacity: 0.5 }}>
+                  {r.session_id.slice(0, 8)}
+                  {r.claude_session_id && ` ↔ ${r.claude_session_id.slice(0, 8)}`}
+                </td>
+                <td style={{ ...missionTd, opacity: 0.7 }}>
+                  {formatTimestamp(r.run.started_at)}
+                </td>
+                <td style={{ ...missionTd, opacity: 0.7 }}>
+                  {formatAge(now - new Date(r.run.started_at).getTime())}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </main>
+  );
+}
+
+const missionTh: React.CSSProperties = {
+  padding: "6px 10px",
+  fontWeight: 500,
+  textTransform: "uppercase",
+  letterSpacing: 0.4,
+};
+const missionTd: React.CSSProperties = {
+  padding: "8px 10px",
+  verticalAlign: "top",
+};
+
+function formatAge(ms: number): string {
+  if (ms < 0 || !Number.isFinite(ms)) return "—";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
 // rec-3 (kobramaz-a17.3): fan-out dialog. Up to 4 prompts; each becomes a
 // parallel run in its own git worktree. Names must be filename-safe so
 // they end up in `~/.claudeos/worktrees/<workspace-id>/<name>-<ts>/`.
@@ -1532,6 +1796,9 @@ function FanOutPanel({
   onUpdate: (runs: FanOutRun[]) => void;
   onClear: () => void;
 }) {
+  // bsky-2: which tile (if any) the user has drilled into. Inline-expand
+  // a live WebSocket stream for that run below the grid.
+  const [drillDown, setDrillDown] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
@@ -1618,12 +1885,21 @@ function FanOutPanel({
         {runs.map((r) => (
           <div
             key={r.run_id}
+            onClick={() => setDrillDown(drillDown === r.run_id ? null : r.run_id)}
             style={{
-              border: "1px solid var(--border)",
+              border: `1px solid ${
+                drillDown === r.run_id ? "var(--info)" : "var(--border)"
+              }`,
               borderRadius: 4,
               padding: 8,
               background: "var(--raised)",
+              cursor: "pointer",
             }}
+            title={
+              drillDown === r.run_id
+                ? "Click to collapse the live stream"
+                : "Click to watch this run live"
+            }
           >
             <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
               <span
@@ -1672,6 +1948,124 @@ function FanOutPanel({
           </div>
         ))}
       </div>
+      {drillDown && (
+        <LiveRunStream
+          runId={drillDown}
+          name={runs.find((r) => r.run_id === drillDown)?.name ?? ""}
+          onClose={() => setDrillDown(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// bsky-2: live stream viewer for a single run. Replays persisted events
+// first (via GET /runs/:id/events) so the user sees prior progress, then
+// flips to the WebSocket for new events. Same applyEvent + MessageView
+// rendering as the main chat — feels identical to the operator.
+function LiveRunStream({
+  runId,
+  name,
+  onClose,
+}: {
+  runId: string;
+  name: string;
+  onClose: () => void;
+}) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const closeRef = useRef<CloseFn | null>(null);
+  const endRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMessages([]);
+    setError(null);
+
+    void (async () => {
+      // Replay first so the user doesn't see an empty pane while the
+      // stream catches up to where the run already is.
+      try {
+        const events = await api.listRunEvents(runId);
+        if (cancelled) return;
+        let msgs: Message[] = [];
+        for (const e of events) msgs = applyEvent(msgs, e);
+        setMessages(msgs);
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+        return;
+      }
+      // Subscribe to live events. Duplicates with the replay are
+      // possible if events landed between the GET and the WS open;
+      // applyEvent dedupes text deltas by message_id, but tool events
+      // would re-render. Acceptable for MVP — visible flicker, not
+      // incorrect state.
+      if (cancelled) return;
+      const close = api.streamRun(runId, (event) => {
+        setMessages((prev) => applyEvent(prev, event));
+      });
+      closeRef.current = close;
+    })();
+
+    return () => {
+      cancelled = true;
+      if (closeRef.current) {
+        closeRef.current();
+        closeRef.current = null;
+      }
+    };
+  }, [runId]);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length]);
+
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        border: "1px solid var(--info)",
+        borderRadius: 4,
+        background: "var(--bg)",
+        padding: 10,
+        maxHeight: 300,
+        overflowY: "auto",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 11,
+          marginBottom: 6,
+          color: "var(--mute)",
+        }}
+      >
+        <strong style={{ color: "var(--info)" }}>Live · {name}</strong>
+        <span style={{ fontFamily: "monospace", opacity: 0.6 }}>{runId.slice(0, 8)}</span>
+        <button
+          onClick={onClose}
+          style={{
+            ...settingsBtn,
+            marginLeft: "auto",
+            padding: "2px 8px",
+            fontSize: 10,
+          }}
+        >
+          ×
+        </button>
+      </div>
+      {error && (
+        <div style={{ fontSize: 11, color: "var(--errorMuted)" }}>{error}</div>
+      )}
+      {!error && messages.length === 0 && (
+        <div style={{ fontSize: 11, opacity: 0.5 }}>Waiting for first event…</div>
+      )}
+      {messages.map((m) => (
+        <MessageView key={m.id} message={m} />
+      ))}
+      <div ref={endRef} />
     </div>
   );
 }

@@ -99,6 +99,38 @@ test("smoke: app boots, api-server health endpoint responds", async () => {
   assert.equal(status, 200);
 });
 
+test("mission control: 📡 toggle swaps to dashboard, GET /active-runs is queried (kobramaz-xzj.1)", async () => {
+  const { application, page } = await launchApp();
+  app = application;
+
+  await page
+    .locator('button[title^="Mission Control"]')
+    .waitFor({ state: "visible", timeout: 30_000 });
+
+  // Pre-register the response wait so we don't race the click.
+  const activeWait = page.waitForResponse(
+    (res) => res.url().endsWith("/active-runs") && res.request().method() === "GET",
+    { timeout: 10_000 },
+  );
+  await page.click('button[title^="Mission Control"]');
+  const res = await activeWait;
+  assert.equal(res.status(), 200);
+
+  await page.getByText("Mission Control", { exact: true }).waitFor({
+    state: "visible",
+    timeout: 5_000,
+  });
+  await page
+    .getByText("No active runs", { exact: false })
+    .waitFor({ state: "visible", timeout: 5_000 });
+
+  await page.click('button[title^="Mission Control"]');
+  await page.getByText("Mission Control", { exact: true }).waitFor({
+    state: "hidden",
+    timeout: 5_000,
+  });
+});
+
 test("keyboard shortcuts: Ctrl+/ opens cheat sheet, Ctrl+Shift+N opens create dialog (xh5.4)", async () => {
   const { application, page } = await launchApp();
   app = application;
