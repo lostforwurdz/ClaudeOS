@@ -1,7 +1,7 @@
-/**
- * ClaudeOS harness — spawns the Claude Code CLI and streams events.
- *
- * Implementation lands in claude-code.ts as part of bd:kobramaz-1yb.9.
- */
-
-export type { RunRequest, RunEvent } from "@claudeos/runtime-client/contracts";
+export { runHarness, parseStream } from "./claude-code.js";
+export type { HarnessOptions, HarnessResult } from "./claude-code.js";
+export type {
+  RunRequest,
+  RunEvent,
+  TokenUsage,
+} from "@claudeos/runtime-client/contracts";
