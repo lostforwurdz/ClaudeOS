@@ -13,6 +13,7 @@
     "build:renderer": "vite build",
     "build:electron": "tsup electron/main.ts --format cjs --out-dir out/electron --minify",
     "build": "npm run build:renderer && npm run build:electron",
+    "test": "node --import tsx --test src/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -29,6 +30,7 @@
     "cross-env": "^10.0.0",
     "electron": "^41.2.0",
     "tsup": "^8.5.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vite": "^8.0.6",
     "wait-on": "^8.0.5"

@@ -8,6 +8,7 @@
     "desktop:clean": "rm -rf desktop/out desktop/build",
     "desktop:install": "npm install --prefix desktop",
     "desktop:dev": "npm --prefix desktop run dev",
+    "desktop:test": "npm --prefix desktop run test",
     "desktop:typecheck": "npm --prefix desktop run typecheck",
     "harness:install": "npm install --prefix runtime/harness",
     "harness:build": "npm --prefix runtime/harness run build",
