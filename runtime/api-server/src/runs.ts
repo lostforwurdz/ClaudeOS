@@ -1,0 +1,159 @@
+import { randomUUID } from "node:crypto";
+
+import { runHarness } from "@claudeos/harness";
+import type {
+  RunEvent,
+  RunRequest,
+} from "@claudeos/runtime-client/contracts";
+import type { Database as DatabaseType } from "better-sqlite3";
+
+import type { EventBus } from "./event-bus.js";
+
+export interface RunRecord {
+  id: string;
+  session_id: string;
+  input_id: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  started_at: string;
+  completed_at: string | null;
+}
+
+export interface RunController {
+  cancel: () => void;
+}
+
+export class RunManager {
+  private active = new Map<string, AbortController>();
+
+  constructor(
+    private readonly db: DatabaseType,
+    private readonly bus: EventBus,
+  ) {}
+
+  /**
+   * Persist a new run, kick off the harness in the background, and return
+   * synchronously with the run id. Events stream to the bus and the DB
+   * concurrently.
+   */
+  submit(workspaceDir: string, claudeSessionId: string | null, request: RunRequest): string {
+    const runId = randomUUID();
+    const startedAt = new Date().toISOString();
+
+    this.db
+      .prepare(
+        `INSERT INTO runs (id, session_id, input_id, status, started_at, request_json)
+         VALUES (?, ?, ?, 'running', ?, ?)`,
+      )
+      .run(runId, request.session_id, request.input_id, startedAt, JSON.stringify(request));
+
+    const abort = new AbortController();
+    this.active.set(runId, abort);
+
+    void this.execute(runId, workspaceDir, claudeSessionId, request, abort.signal);
+    return runId;
+  }
+
+  cancel(runId: string): boolean {
+    const abort = this.active.get(runId);
+    if (!abort) return false;
+    abort.abort();
+    return true;
+  }
+
+  private async execute(
+    runId: string,
+    workspaceDir: string,
+    claudeSessionId: string | null,
+    request: RunRequest,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const insertEvent = this.db.prepare(
+      `INSERT INTO run_events (run_id, sequence, event_json) VALUES (?, ?, ?)`,
+    );
+    const updateSession = this.db.prepare(
+      `UPDATE sessions SET claude_session_id = ?, updated_at = ? WHERE id = ?`,
+    );
+    const updateRun = this.db.prepare(
+      `UPDATE runs SET status = ?, completed_at = ? WHERE id = ?`,
+    );
+
+    let lastEventType: RunEvent["type"] | null = null;
+    let observedClaudeSessionId: string | null = claudeSessionId;
+
+    try {
+      const result = await runHarness(request, {
+        workspaceDir,
+        resumeClaudeSessionId: claudeSessionId,
+        signal,
+        onEvent: (event) => {
+          lastEventType = event.type;
+          if (event.type === "run_started" && event.payload.claude_session_id) {
+            observedClaudeSessionId = event.payload.claude_session_id;
+          }
+          try {
+            insertEvent.run(runId, event.sequence, JSON.stringify(event));
+          } catch {
+            // Duplicate sequence (shouldn't happen) — drop silently.
+          }
+          this.bus.publish(runId, event);
+        },
+      });
+
+      if (observedClaudeSessionId) {
+        updateSession.run(
+          observedClaudeSessionId,
+          new Date().toISOString(),
+          request.session_id,
+        );
+      }
+
+      const status =
+        signal.aborted
+          ? "cancelled"
+          : lastEventType === "run_completed"
+          ? "completed"
+          : "failed";
+      updateRun.run(status, new Date().toISOString(), runId);
+
+      // If the harness exited non-zero or never emitted a terminal event we
+      // already synthesized run_failed inside the harness; the status above
+      // reflects that.
+      void result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failed: RunEvent = {
+        type: "run_failed",
+        session_id: request.session_id,
+        input_id: request.input_id,
+        sequence: Number.MAX_SAFE_INTEGER,
+        timestamp: new Date().toISOString(),
+        payload: { error: message, subtype: "harness_threw" },
+      };
+      try {
+        insertEvent.run(runId, failed.sequence, JSON.stringify(failed));
+      } catch {
+        // ignore
+      }
+      this.bus.publish(runId, failed);
+      updateRun.run("failed", new Date().toISOString(), runId);
+    } finally {
+      this.active.delete(runId);
+    }
+  }
+
+  listEvents(runId: string): RunEvent[] {
+    const rows = this.db
+      .prepare(`SELECT event_json FROM run_events WHERE run_id = ? ORDER BY sequence ASC`)
+      .all(runId) as Array<{ event_json: string }>;
+    return rows.map((r) => JSON.parse(r.event_json) as RunEvent);
+  }
+
+  getRun(runId: string): RunRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, session_id, input_id, status, started_at, completed_at FROM runs WHERE id = ?`,
+      )
+      .get(runId) as RunRecord | undefined;
+    return row ?? null;
+  }
+}

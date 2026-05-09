@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@claudeos/state-store": "file:../state-store",
+    "@claudeos/harness": "file:../harness",
+    "@claudeos/runtime-client": "file:../../sdk/runtime-client",
     "@fastify/websocket": "^11.2.0",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "better-sqlite3": "^12.8.0",

@@ -1,0 +1,279 @@
+import { randomUUID } from "node:crypto";
+
+import websocketPlugin from "@fastify/websocket";
+import type { Database as DatabaseType } from "better-sqlite3";
+import Fastify, { type FastifyInstance } from "fastify";
+import { z } from "zod";
+
+import type {
+  CreateSessionBody,
+  CreateWorkspaceBody,
+  RunRequest,
+  Session,
+  SubmitRunResponse,
+  Workspace,
+} from "@claudeos/runtime-client/contracts";
+
+import { defaultDbPath, openDb } from "./db.js";
+import { EventBus } from "./event-bus.js";
+import { RunManager } from "./runs.js";
+
+// ----------------------------------------------------------------------------
+// Validation schemas
+// ----------------------------------------------------------------------------
+
+const CreateWorkspaceSchema = z.object({
+  name: z.string().min(1),
+  dir: z.string().min(1),
+});
+
+const CreateSessionSchema = z.object({
+  workspace_id: z.string().min(1),
+});
+
+const SubmitRunSchema = z.object({
+  workspace_id: z.string().min(1),
+  session_id: z.string().min(1),
+  input_id: z.string().min(1),
+  instruction: z.string().min(1),
+  attachments: z.array(z.unknown()).optional(),
+  model: z.string().optional(),
+  append_system_prompt: z.string().optional(),
+  permission_mode: z
+    .enum(["default", "acceptEdits", "plan", "bypassPermissions"])
+    .optional(),
+  add_dirs: z.array(z.string()).optional(),
+  mcp_servers: z.array(z.unknown()).optional(),
+  timeout_seconds: z.number().optional(),
+  debug: z.boolean().optional(),
+});
+
+// ----------------------------------------------------------------------------
+// Repository helpers
+// ----------------------------------------------------------------------------
+
+interface Repo {
+  createWorkspace(body: CreateWorkspaceBody): Workspace;
+  listWorkspaces(): Workspace[];
+  getWorkspace(id: string): Workspace | null;
+  createSession(body: CreateSessionBody): Session;
+  getSession(id: string): Session | null;
+}
+
+function createRepo(db: DatabaseType): Repo {
+  return {
+    createWorkspace(body) {
+      const now = new Date().toISOString();
+      const ws: Workspace = {
+        id: randomUUID(),
+        name: body.name,
+        dir: body.dir,
+        created_at: now,
+        updated_at: now,
+      };
+      db.prepare(
+        `INSERT INTO workspaces (id, name, dir, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+      ).run(ws.id, ws.name, ws.dir, ws.created_at, ws.updated_at);
+      return ws;
+    },
+    listWorkspaces() {
+      return db
+        .prepare(`SELECT id, name, dir, created_at, updated_at FROM workspaces ORDER BY created_at DESC`)
+        .all() as Workspace[];
+    },
+    getWorkspace(id) {
+      const row = db
+        .prepare(`SELECT id, name, dir, created_at, updated_at FROM workspaces WHERE id = ?`)
+        .get(id) as Workspace | undefined;
+      return row ?? null;
+    },
+    createSession(body) {
+      const now = new Date().toISOString();
+      const session: Session = {
+        id: randomUUID(),
+        workspace_id: body.workspace_id,
+        claude_session_id: null,
+        created_at: now,
+        updated_at: now,
+      };
+      db.prepare(
+        `INSERT INTO sessions (id, workspace_id, claude_session_id, created_at, updated_at) VALUES (?, ?, NULL, ?, ?)`,
+      ).run(session.id, session.workspace_id, session.created_at, session.updated_at);
+      return session;
+    },
+    getSession(id) {
+      const row = db
+        .prepare(
+          `SELECT id, workspace_id, claude_session_id, created_at, updated_at FROM sessions WHERE id = ?`,
+        )
+        .get(id) as Session | undefined;
+      return row ?? null;
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// App factory
+// ----------------------------------------------------------------------------
+
+export interface ServerOptions {
+  port?: number;
+  host?: string;
+  dbPath?: string;
+}
+
+export async function createServer(opts: ServerOptions = {}): Promise<FastifyInstance> {
+  const db = openDb(opts.dbPath ?? defaultDbPath());
+  const repo = createRepo(db);
+  const bus = new EventBus();
+  const runs = new RunManager(db, bus);
+
+  const app = Fastify({ logger: { level: "info" } });
+  await app.register(websocketPlugin);
+
+  app.get("/health", async () => ({ ok: true }));
+
+  // -- Workspaces -----------------------------------------------------------
+
+  app.post("/workspaces", async (request, reply) => {
+    const parsed = CreateWorkspaceSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.format() });
+    return repo.createWorkspace(parsed.data);
+  });
+
+  app.get("/workspaces", async () => repo.listWorkspaces());
+
+  app.get<{ Params: { id: string } }>("/workspaces/:id", async (request, reply) => {
+    const ws = repo.getWorkspace(request.params.id);
+    if (!ws) return reply.code(404).send({ error: "workspace not found" });
+    return ws;
+  });
+
+  // -- Sessions -------------------------------------------------------------
+
+  app.post("/sessions", async (request, reply) => {
+    const parsed = CreateSessionSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.format() });
+    if (!repo.getWorkspace(parsed.data.workspace_id)) {
+      return reply.code(404).send({ error: "workspace not found" });
+    }
+    return repo.createSession(parsed.data);
+  });
+
+  app.get<{ Params: { id: string } }>("/sessions/:id", async (request, reply) => {
+    const session = repo.getSession(request.params.id);
+    if (!session) return reply.code(404).send({ error: "session not found" });
+    return session;
+  });
+
+  // -- Runs -----------------------------------------------------------------
+
+  app.post("/runs", async (request, reply): Promise<SubmitRunResponse | { error: unknown }> => {
+    const parsed = SubmitRunSchema.safeParse(request.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: parsed.error.format() };
+    }
+    const runRequest = parsed.data as RunRequest;
+    const workspace = repo.getWorkspace(runRequest.workspace_id);
+    if (!workspace) {
+      reply.code(404);
+      return { error: "workspace not found" };
+    }
+    const session = repo.getSession(runRequest.session_id);
+    if (!session) {
+      reply.code(404);
+      return { error: "session not found" };
+    }
+    if (session.workspace_id !== workspace.id) {
+      reply.code(400);
+      return { error: "session does not belong to workspace" };
+    }
+
+    const runId = runs.submit(workspace.dir, session.claude_session_id, runRequest);
+    return {
+      run_id: runId,
+      session_id: runRequest.session_id,
+      input_id: runRequest.input_id,
+    };
+  });
+
+  app.get<{ Params: { id: string } }>("/runs/:id", async (request, reply) => {
+    const run = runs.getRun(request.params.id);
+    if (!run) return reply.code(404).send({ error: "run not found" });
+    return run;
+  });
+
+  app.get<{ Params: { id: string } }>("/runs/:id/events", async (request, reply) => {
+    const run = runs.getRun(request.params.id);
+    if (!run) return reply.code(404).send({ error: "run not found" });
+    return runs.listEvents(request.params.id);
+  });
+
+  app.post<{ Params: { id: string } }>("/runs/:id/cancel", async (request, reply) => {
+    const ok = runs.cancel(request.params.id);
+    if (!ok) return reply.code(404).send({ error: "run not active" });
+    return { ok: true };
+  });
+
+  // -- WebSocket: live event stream per run ---------------------------------
+
+  app.get<{ Params: { id: string } }>(
+    "/runs/:id/stream",
+    { websocket: true },
+    (socket, req) => {
+      const runId = (req.params as { id: string }).id;
+      const run = runs.getRun(runId);
+      if (!run) {
+        socket.send(JSON.stringify({ error: "run not found" }));
+        socket.close();
+        return;
+      }
+
+      // Replay any persisted events first so the client never misses one.
+      for (const event of runs.listEvents(runId)) {
+        socket.send(JSON.stringify(event));
+      }
+
+      // If the run already finished, close after replay.
+      if (run.status !== "running") {
+        socket.close();
+        return;
+      }
+
+      const unsubscribe = bus.subscribe(runId, (event) => {
+        socket.send(JSON.stringify(event));
+        if (event.type === "run_completed" || event.type === "run_failed") {
+          unsubscribe();
+          socket.close();
+        }
+      });
+
+      socket.on("close", () => unsubscribe());
+    },
+  );
+
+  app.addHook("onClose", async () => {
+    db.close();
+  });
+
+  if (opts.port !== undefined) {
+    await app.listen({ port: opts.port, host: opts.host ?? "127.0.0.1" });
+  }
+  return app;
+}
+
+// ----------------------------------------------------------------------------
+// CLI entry
+// ----------------------------------------------------------------------------
+
+async function main(): Promise<void> {
+  const port = Number(process.env.CLAUDEOS_PORT ?? 7878);
+  const host = process.env.CLAUDEOS_HOST ?? "127.0.0.1";
+  const app = await createServer({ port, host });
+  app.log.info(`ClaudeOS api-server listening on ${host}:${port}`);
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  void main();
+}

@@ -17,10 +17,6 @@
     "api-server:build": "npm --prefix runtime/api-server run build",
     "api-server:test": "npm --prefix runtime/api-server run test",
     "api-server:typecheck": "npm --prefix runtime/api-server run typecheck",
-    "state-store:install": "npm install --prefix runtime/state-store",
-    "state-store:build": "npm --prefix runtime/state-store run build",
-    "state-store:test": "npm --prefix runtime/state-store run test",
-    "state-store:typecheck": "npm --prefix runtime/state-store run typecheck",
     "bridge:install": "bun install --cwd sdk/bridge",
     "bridge:build": "bun --cwd sdk/bridge run build",
     "bridge:test": "bun --cwd sdk/bridge run test",
@@ -28,7 +24,7 @@
     "runtime-client:install": "npm install --prefix sdk/runtime-client",
     "runtime-client:build": "npm --prefix sdk/runtime-client run build",
     "runtime-client:typecheck": "npm --prefix sdk/runtime-client run typecheck",
-    "runtime:test": "npm run state-store:test && npm run harness:test && npm run api-server:test",
-    "runtime:typecheck": "npm run state-store:typecheck && npm run harness:typecheck && npm run api-server:typecheck"
+    "runtime:test": "npm run harness:test && npm run api-server:test",
+    "runtime:typecheck": "npm run harness:typecheck && npm run api-server:typecheck"
   }
 }

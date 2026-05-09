@@ -16,7 +16,6 @@ desktop/.cache/
 
 runtime/harness/dist/
 runtime/api-server/dist/
-runtime/state-store/dist/
 
 sdk/runtime-client/dist/
 
