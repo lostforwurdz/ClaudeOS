@@ -24,6 +24,12 @@ export interface Message {
   id: string;
   role: "user" | "assistant" | "tool";
   text: string;
+  // Populated for role === "tool"
+  toolDir?: "call" | "result";
+  toolName?: string;
+  toolInput?: unknown;
+  toolContent?: unknown;
+  toolIsError?: boolean;
 }
 
 export interface WorkspaceState {
@@ -307,11 +313,17 @@ export function applyEvent(messages: Message[], event: RunEvent): Message[] {
       {
         id: `tool-call-${event.payload.tool_use_id}`,
         role: "tool",
-        text: `→ ${event.payload.name}(${JSON.stringify(event.payload.input)})`,
+        text: `→ ${event.payload.name}`,
+        toolDir: "call",
+        toolName: event.payload.name,
+        toolInput: event.payload.input,
       },
     ];
   }
   if (event.type === "tool_result") {
+    const callMsg = messages.find(
+      (m) => m.id === `tool-call-${event.payload.tool_use_id}`,
+    );
     const text =
       typeof event.payload.content === "string"
         ? event.payload.content
@@ -322,6 +334,10 @@ export function applyEvent(messages: Message[], event: RunEvent): Message[] {
         id: `tool-result-${event.payload.tool_use_id}`,
         role: "tool",
         text: `← ${event.payload.is_error ? "[error] " : ""}${text}`,
+        toolDir: "result",
+        toolName: callMsg?.toolName,
+        toolContent: event.payload.content,
+        toolIsError: event.payload.is_error,
       },
     ];
   }

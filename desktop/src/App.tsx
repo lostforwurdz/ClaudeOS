@@ -962,9 +962,9 @@ function MessageView({ message }: { message: Message }) {
 }
 
 function MessageBody({ message }: { message: Message }) {
-  // User and tool messages stay as preformatted text — user input often
-  // contains code we don't want auto-formatted, and tool transcripts are
-  // already JSON/log lines that look better verbatim.
+  if (message.role === "tool" && message.toolDir) {
+    return <ToolMessageBody message={message} />;
+  }
   if (message.role !== "assistant") {
     return (
       <div style={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.5 }}>
@@ -972,10 +972,6 @@ function MessageBody({ message }: { message: Message }) {
       </div>
     );
   }
-  // Assistant messages render through markdown so fenced code blocks get
-  // syntax-highlighted, lists/headings/links display properly. ReactMarkdown
-  // tolerates partial markdown during streaming — the user just sees
-  // formatting "snap in" once a delimiter completes.
   return (
     <div className="md-body" style={{ fontSize: 13, lineHeight: 1.55 }}>
       <ReactMarkdown
@@ -991,6 +987,83 @@ function MessageBody({ message }: { message: Message }) {
       >
         {message.text || "…"}
       </ReactMarkdown>
+    </div>
+  );
+}
+
+function ToolMessageBody({ message }: { message: Message }) {
+  const [open, setOpen] = useState(false);
+  const isCall = message.toolDir === "call";
+  const isError = message.toolIsError;
+
+  const bodyData = isCall ? message.toolInput : message.toolContent;
+  const bodyJson =
+    bodyData === undefined || bodyData === null
+      ? null
+      : typeof bodyData === "string"
+        ? bodyData
+        : JSON.stringify(bodyData, null, 2);
+
+  const borderColor = isError ? "#5a2020" : isCall ? "#1e3a4a" : "#1a3a2a";
+  const accentColor = isError ? "#ff8c8c" : isCall ? "#7ec8e8" : "#5fdcb6";
+  const arrow = isCall ? "→" : "←";
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${borderColor}`,
+        borderRadius: 4,
+        fontSize: 12,
+        lineHeight: 1.4,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        onClick={() => bodyJson && setOpen((o) => !o)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "5px 9px",
+          cursor: bodyJson ? "pointer" : "default",
+          userSelect: "none",
+          background: "rgba(255,255,255,0.03)",
+        }}
+      >
+        <span style={{ color: accentColor, fontFamily: "monospace" }}>{arrow}</span>
+        <span style={{ color: accentColor, fontFamily: "monospace", fontWeight: 600 }}>
+          {message.toolName ?? (isCall ? "tool_call" : "tool_result")}
+        </span>
+        {isError && (
+          <span
+            style={{
+              background: "#5a2020",
+              color: "#ff8c8c",
+              fontSize: 10,
+              padding: "1px 5px",
+              borderRadius: 3,
+              marginLeft: 2,
+            }}
+          >
+            error
+          </span>
+        )}
+        {bodyJson && (
+          <span style={{ marginLeft: "auto", opacity: 0.4, fontSize: 10 }}>
+            {open ? "▲" : "▼"}
+          </span>
+        )}
+      </div>
+      {open && bodyJson && (
+        <div className="md-body" style={{ borderTop: `1px solid ${borderColor}` }}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+          >
+            {"```json\n" + bodyJson + "\n```"}
+          </ReactMarkdown>
+        </div>
+      )}
     </div>
   );
 }
