@@ -65,18 +65,33 @@ export function App() {
     dispatch({ type: "WORKSPACE_CLOSED", workspaceId: id });
   }, []);
 
-  const handleCreateWorkspace = useCallback(async () => {
-    const name = window.prompt("Workspace name?");
-    if (!name) return;
-    const dir = window.prompt("Workspace directory (absolute path)?");
-    if (!dir) return;
-    try {
-      const ws = await api.createWorkspace({ name, dir });
-      setWorkspaces((prev) => [ws, ...prev]);
-      void openWorkspace(ws);
-    } catch (e) {
-      setGlobalError(String(e));
-    }
+  // window.prompt() is disabled in Electron (chromium doesn't ship it), so
+  // we drive create/rename through a small in-app modal instead. The handlers
+  // open the modal; the modal calls back with the values (or null on cancel).
+  const [activePrompt, setActivePrompt] = useState<ActivePrompt | null>(null);
+
+  const handleCreateWorkspace = useCallback(() => {
+    setActivePrompt({
+      title: "Create workspace",
+      submitLabel: "Create",
+      fields: [
+        { name: "name", label: "Name", placeholder: "my-project" },
+        { name: "dir", label: "Directory (absolute path)", placeholder: "/home/me/projects/my-project" },
+      ],
+      onSubmit: async (values) => {
+        setActivePrompt(null);
+        const name = values.name?.trim();
+        const dir = values.dir?.trim();
+        if (!name || !dir) return;
+        try {
+          const ws = await api.createWorkspace({ name, dir });
+          setWorkspaces((prev) => [ws, ...prev]);
+          void openWorkspace(ws);
+        } catch (e) {
+          setGlobalError(String(e));
+        }
+      },
+    });
   }, [openWorkspace]);
 
   const handleSend = useCallback(
@@ -159,18 +174,28 @@ export function App() {
   );
 
   const handleRenameWorkspace = useCallback(
-    async (workspaceId: string, currentName: string) => {
-      const next = window.prompt("Rename workspace", currentName);
-      if (!next || next.trim() === currentName) return;
-      try {
-        const updated = await api.renameWorkspace(workspaceId, next.trim());
-        setWorkspaces((prev) =>
-          prev.map((w) => (w.id === workspaceId ? updated : w)),
-        );
-        dispatch({ type: "WORKSPACE_RENAMED", workspace: updated });
-      } catch (e) {
-        setGlobalError(`Rename failed: ${String(e)}`);
-      }
+    (workspaceId: string, currentName: string) => {
+      setActivePrompt({
+        title: "Rename workspace",
+        submitLabel: "Rename",
+        fields: [
+          { name: "name", label: "Name", defaultValue: currentName, placeholder: currentName },
+        ],
+        onSubmit: async (values) => {
+          setActivePrompt(null);
+          const next = values.name?.trim();
+          if (!next || next === currentName) return;
+          try {
+            const updated = await api.renameWorkspace(workspaceId, next);
+            setWorkspaces((prev) =>
+              prev.map((w) => (w.id === workspaceId ? updated : w)),
+            );
+            dispatch({ type: "WORKSPACE_RENAMED", workspace: updated });
+          } catch (e) {
+            setGlobalError(`Rename failed: ${String(e)}`);
+          }
+        },
+      });
     },
     [],
   );
@@ -255,6 +280,12 @@ export function App() {
         onRename={(ws) => void handleRenameWorkspace(ws.id, ws.name)}
         onDelete={(ws) => void handleDeleteWorkspace(ws.id, ws.name)}
       />
+      {activePrompt && (
+        <PromptDialog
+          prompt={activePrompt}
+          onCancel={() => setActivePrompt(null)}
+        />
+      )}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         {globalError && (
           <div style={{ background: "#3a1010", color: "#ff8c8c", padding: "6px 12px", fontSize: 12 }}>
@@ -960,6 +991,123 @@ function MessageBody({ message }: { message: Message }) {
       >
         {message.text || "…"}
       </ReactMarkdown>
+    </div>
+  );
+}
+
+interface PromptField {
+  name: string;
+  label: string;
+  placeholder?: string;
+  defaultValue?: string;
+}
+
+interface ActivePrompt {
+  title: string;
+  submitLabel: string;
+  fields: PromptField[];
+  onSubmit: (values: Record<string, string>) => void;
+}
+
+function PromptDialog({
+  prompt,
+  onCancel,
+}: {
+  prompt: ActivePrompt;
+  onCancel: () => void;
+}) {
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(prompt.fields.map((f) => [f.name, f.defaultValue ?? ""])),
+  );
+  const firstFieldRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    firstFieldRef.current?.focus();
+    firstFieldRef.current?.select();
+  }, []);
+
+  const submit = () => prompt.onSubmit(values);
+
+  return (
+    <div
+      onClick={onCancel}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0, 0, 0, 0.5)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "#0e0e0e",
+          border: "1px solid #2a2a2a",
+          borderRadius: 6,
+          padding: 20,
+          width: 440,
+          maxWidth: "90vw",
+        }}
+      >
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>{prompt.title}</div>
+        {prompt.fields.map((field, i) => (
+          <div key={field.name} style={{ marginBottom: 10 }}>
+            <label
+              style={{
+                display: "block",
+                fontSize: 11,
+                opacity: 0.7,
+                marginBottom: 4,
+                letterSpacing: 0.2,
+              }}
+            >
+              {field.label}
+            </label>
+            <input
+              ref={i === 0 ? firstFieldRef : null}
+              value={values[field.name] ?? ""}
+              onChange={(e) =>
+                setValues((prev) => ({ ...prev, [field.name]: e.target.value }))
+              }
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submit();
+                if (e.key === "Escape") onCancel();
+              }}
+              placeholder={field.placeholder}
+              style={{
+                width: "100%",
+                background: "#161616",
+                color: "#e5e5e5",
+                border: "1px solid #2a2a2a",
+                borderRadius: 4,
+                padding: "8px 10px",
+                fontSize: 13,
+                fontFamily: "inherit",
+                boxSizing: "border-box",
+              }}
+            />
+          </div>
+        ))}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+          <button onClick={onCancel} style={{ ...btn, padding: "6px 14px" }}>
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            style={{
+              ...btn,
+              padding: "6px 14px",
+              background: "#1a3a2a",
+              borderColor: "#2d6444",
+              color: "#5fdcb6",
+            }}
+          >
+            {prompt.submitLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
