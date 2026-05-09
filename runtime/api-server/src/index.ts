@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import corsPlugin from "@fastify/cors";
+import multipartPlugin from "@fastify/multipart";
 import websocketPlugin from "@fastify/websocket";
 import type { Database as DatabaseType } from "better-sqlite3";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -19,6 +20,7 @@ import type {
 import { defaultDbPath, openDb } from "./db.js";
 import { EventBus } from "./event-bus.js";
 import { RunManager } from "./runs.js";
+import { MAX_UPLOAD_BYTES, saveUpload } from "./uploads.js";
 
 // ----------------------------------------------------------------------------
 // Validation schemas
@@ -180,6 +182,9 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   }
 
   await app.register(websocketPlugin);
+  await app.register(multipartPlugin, {
+    limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+  });
 
   app.get("/health", async () => ({ ok: true }));
 
@@ -198,6 +203,45 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
     if (!ws) return reply.code(404).send({ error: "workspace not found" });
     return ws;
   });
+
+  app.post<{ Params: { id: string } }>(
+    "/workspaces/:id/uploads",
+    async (request, reply) => {
+      const ws = repo.getWorkspace(request.params.id);
+      if (!ws) return reply.code(404).send({ error: "workspace not found" });
+
+      if (!request.isMultipart()) {
+        return reply.code(415).send({ error: "expected multipart/form-data" });
+      }
+
+      let file;
+      try {
+        file = await request.file();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return reply.code(400).send({ error: message });
+      }
+      if (!file) return reply.code(400).send({ error: "no file provided" });
+
+      let bytes: Buffer;
+      try {
+        bytes = await file.toBuffer();
+      } catch (err) {
+        // @fastify/multipart throws RequestFileTooLargeError when the limit is hit.
+        const message = err instanceof Error ? err.message : String(err);
+        const tooLarge = /file.*too large|fileSize/i.test(message);
+        return reply.code(tooLarge ? 413 : 400).send({ error: message });
+      }
+
+      const attachment = await saveUpload({
+        workspaceDir: ws.dir,
+        filename: file.filename,
+        mimeType: file.mimetype,
+        bytes,
+      });
+      return attachment;
+    },
+  );
 
   // -- Sessions -------------------------------------------------------------
 
