@@ -1,5 +1,10 @@
 export { runHarness, parseStream, buildArgs } from "./claude-code.js";
-export type { HarnessOptions, HarnessResult } from "./claude-code.js";
+export type {
+  HarnessOptions,
+  HarnessResult,
+  PermissionDecision,
+  PermissionRequestPayload,
+} from "./claude-code.js";
 export {
   toClaudeMcpConfig,
   materializeMcpConfig,

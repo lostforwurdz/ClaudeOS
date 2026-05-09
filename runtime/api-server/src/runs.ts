@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 
 import { runHarness } from "@claudeos/harness";
 import type {
+  PermissionDecision,
+  PermissionRequestPayload,
+} from "@claudeos/harness";
+import type {
   RunEvent,
   RunRequest,
 } from "@claudeos/runtime-client/contracts";
@@ -22,12 +26,25 @@ export interface RunController {
   cancel: () => void;
 }
 
+interface PendingPermission {
+  payload: PermissionRequestPayload;
+  resolve: (decision: PermissionDecision) => void;
+  reject: (err: Error) => void;
+}
+
 export class RunManager {
   private active = new Map<string, AbortController>();
+  /**
+   * Pending permission requests, one per active run. The harness `awaitPermissionDecision`
+   * callback resolves through this map when a decision arrives via
+   * `respondToPermission()` (typically POST /runs/:id/permission).
+   */
+  private pendingPermissions = new Map<string, PendingPermission>();
 
   constructor(
     private readonly db: DatabaseType,
     private readonly bus: EventBus,
+    private readonly options: { permissionHookBin?: string | null } = {},
   ) {}
 
   /**
@@ -56,8 +73,33 @@ export class RunManager {
   cancel(runId: string): boolean {
     const abort = this.active.get(runId);
     if (!abort) return false;
+    // Reject any pending permission so the harness loop unwinds cleanly
+    // rather than hanging on the awaited decision after SIGTERM.
+    const pending = this.pendingPermissions.get(runId);
+    if (pending) {
+      pending.reject(new Error("run cancelled"));
+      this.pendingPermissions.delete(runId);
+    }
     abort.abort();
     return true;
+  }
+
+  /**
+   * xh4.2: feed a user's allow/deny decision back to the in-flight run. Returns
+   * false when there's no pending permission for the run (already decided,
+   * cancelled, or invalid runId).
+   */
+  respondToPermission(runId: string, decision: PermissionDecision): boolean {
+    const pending = this.pendingPermissions.get(runId);
+    if (!pending) return false;
+    this.pendingPermissions.delete(runId);
+    pending.resolve(decision);
+    return true;
+  }
+
+  /** Snapshot of the permission request awaiting a decision, or null. */
+  getPendingPermission(runId: string): PermissionRequestPayload | null {
+    return this.pendingPermissions.get(runId)?.payload ?? null;
   }
 
   private async execute(
@@ -84,6 +126,13 @@ export class RunManager {
         workspaceDir,
         resumeClaudeSessionId: claudeSessionId,
         signal,
+        runId,
+        permissionHookBin: this.options.permissionHookBin ?? undefined,
+        awaitPermissionDecision: (payload) =>
+          new Promise<PermissionDecision>((resolve, reject) => {
+            // The matching cancel/respond paths drain this slot.
+            this.pendingPermissions.set(runId, { payload, resolve, reject });
+          }),
         onEvent: (event) => {
           lastEventType = event.type;
           // Persist claude_session_id synchronously on run_started so a client

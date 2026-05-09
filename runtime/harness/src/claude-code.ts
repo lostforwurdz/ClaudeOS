@@ -16,7 +16,24 @@ import type {
 } from "@claudeos/runtime-client/contracts";
 
 import { materializeMcpConfig, type MaterializedMcpConfig } from "./mcp-config.js";
+import {
+  buildPermissionHookConfig,
+  persistPermissionDecision,
+  type PermissionHookConfig,
+} from "./permission-hook-config.js";
 import { buildStreamUserMessage, needsStreamInput } from "./stream-input.js";
+
+export interface PermissionDecision {
+  behavior: "allow" | "deny";
+  reason?: string;
+}
+
+export interface PermissionRequestPayload {
+  tool_use_id: string;
+  tool_name: string;
+  input: unknown;
+  reason: string;
+}
 
 export interface HarnessOptions {
   /** Absolute path to the workspace directory. Set as CWD and as --add-dir. */
@@ -31,6 +48,24 @@ export interface HarnessOptions {
   onEvent: (event: RunEvent) => void;
   /** AbortSignal for cancellation. */
   signal?: AbortSignal;
+  /**
+   * Stable id for this run (xh4.2). Used as the scratch-dir key for the
+   * permission-hook decisions file when `permissionHookBin` is set.
+   */
+  runId?: string;
+  /**
+   * Absolute path to the bundled permission-hook launcher script. When set,
+   * runHarness wires `--settings` to fire the hook on every PreToolUse and
+   * orchestrates defer→await-decision→resume.
+   */
+  permissionHookBin?: string;
+  /**
+   * Called when claude exits with `stop_reason: "tool_deferred"`. Resolve with
+   * the user's decision; runHarness writes it to the scratch file and resumes.
+   */
+  awaitPermissionDecision?: (
+    request: PermissionRequestPayload,
+  ) => Promise<PermissionDecision>;
 }
 
 export interface HarnessResult {
@@ -46,82 +81,156 @@ export async function runHarness(
   request: RunRequest,
   options: HarnessOptions,
 ): Promise<HarnessResult> {
-  // Materialize MCP overlays before building argv; cleanup happens in `finally`
-  // so a tempfile is never leaked on spawn/parse errors.
+  // Materialize MCP overlays + permission-hook settings before building argv;
+  // cleanup happens in `finally` so tempfiles are never leaked on spawn/parse
+  // errors.
   const mcpConfig =
     request.mcp_servers && request.mcp_servers.length > 0
       ? materializeMcpConfig(request.mcp_servers)
       : null;
 
+  // xh4.2: when a permission-hook binary is provided AND a runId is known,
+  // wire a per-run --settings file so the hook can defer tool calls and the
+  // harness can collect a decision out-of-band before resuming.
+  const permissionHookConfig: PermissionHookConfig | null =
+    options.permissionHookBin && options.runId
+      ? buildPermissionHookConfig({
+          hookBinaryPath: options.permissionHookBin,
+          runId: options.runId,
+        })
+      : null;
+
   try {
     const useStreamInput = needsStreamInput(request);
-    const args = buildArgs(request, options, mcpConfig, useStreamInput);
-    const env = buildEnv(options);
-    // Falling back to the env var matters for packaged Electron: the GUI
-    // process often inherits a stripped PATH where `claude` isn't visible,
-    // so the desktop main process resolves the absolute path and exports it.
     const binary =
       options.claudeBinary ?? process.env.CLAUDEOS_CLAUDE_BINARY ?? "claude";
 
-    // Always pipe stdin so the type narrows to a writable stream regardless of
-    // whether we send a stream-json user message. In text-input mode we just
-    // close it immediately, which claude treats as "no stdin payload".
-    const child = spawn(binary, args, {
-      cwd: options.workspaceDir,
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    // Persistent state spans resume iterations: the sequence counter must stay
+    // monotonic so downstream consumers can dedup, and the claude session id is
+    // the address we resume against.
+    let resumeId: string | null = options.resumeClaudeSessionId ?? null;
+    let sequence = 0;
+    let exitCode = -1;
+    let stderrAggregate = "";
+    let lastClaudeSessionId: string | null = resumeId;
 
-    if (useStreamInput) {
-      const userMessage = await buildStreamUserMessage(request, {
-        workspaceDir: options.workspaceDir,
+    // Ensure only the FIRST iteration sends the user's message via stream-json
+    // (or as a positional prompt). Subsequent --resume iterations carry no new
+    // input; claude just retries the deferred tool with the hook's saved decision.
+    let useStreamInputThisIteration = useStreamInput;
+    let firstIteration = true;
+
+    while (true) {
+      const args = buildArgs(
+        request,
+        { ...options, resumeClaudeSessionId: resumeId },
+        mcpConfig,
+        useStreamInputThisIteration,
+        permissionHookConfig,
+        // After the first iteration the prompt has already been delivered and
+        // the resume model just feeds the hook's saved decision back.
+        firstIteration,
+      );
+      const env = buildEnv(options, permissionHookConfig);
+
+      const child = spawn(binary, args, {
+        cwd: options.workspaceDir,
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
       });
-      writeStreamInput(child.stdin, userMessage);
-    } else {
-      child.stdin.end();
-    }
 
-    const state: ParserState = {
-      request,
-      claudeSessionId: null,
-      sequence: 0,
-      currentMessageId: null,
-      contentBlockTypes: new Map(),
-      terminalEmitted: false,
-      onEvent: options.onEvent,
-    };
+      if (firstIteration && useStreamInputThisIteration) {
+        const userMessage = await buildStreamUserMessage(request, {
+          workspaceDir: options.workspaceDir,
+        });
+        writeStreamInput(child.stdin, userMessage);
+      } else {
+        child.stdin.end();
+      }
 
-    attachCancellation(child, options.signal);
+      const state: ParserState = {
+        request,
+        claudeSessionId: lastClaudeSessionId,
+        sequence,
+        currentMessageId: null,
+        contentBlockTypes: new Map(),
+        terminalEmitted: false,
+        onEvent: options.onEvent,
+        deferred: false,
+        deferredTool: null,
+      };
 
-    const stderrChunks: string[] = [];
-    child.stderr.on("data", (chunk) => stderrChunks.push(chunk.toString()));
+      attachCancellation(child, options.signal);
 
-    const stdoutClosed = new Promise<void>((resolve) => {
-      const rl = createInterface({ input: child.stdout });
-      rl.on("line", (line) => handleLine(line, state));
-      rl.on("close", () => resolve());
-    });
+      const stderrChunks: string[] = [];
+      child.stderr.on("data", (chunk) => stderrChunks.push(chunk.toString()));
 
-    const exitCode = await new Promise<number>((resolve) => {
-      child.on("exit", (code) => resolve(code ?? -1));
-    });
-    await stdoutClosed;
-
-    if (!state.terminalEmitted) {
-      emit(state, {
-        type: "run_failed",
-        payload: {
-          error:
-            stderrChunks.join("").trim() ||
-            `claude exited with code ${exitCode} before emitting a result event`,
-          subtype: "harness_no_result",
-        },
+      const stdoutClosed = new Promise<void>((resolve) => {
+        const rl = createInterface({ input: child.stdout });
+        rl.on("line", (line) => handleLine(line, state));
+        rl.on("close", () => resolve());
       });
-    }
 
-    return { claudeSessionId: state.claudeSessionId, exitCode };
+      exitCode = await new Promise<number>((resolve) => {
+        child.on("exit", (code) => resolve(code ?? -1));
+      });
+      await stdoutClosed;
+
+      // Carry persistent state across resume iterations.
+      sequence = state.sequence;
+      if (state.claudeSessionId) lastClaudeSessionId = state.claudeSessionId;
+      stderrAggregate += stderrChunks.join("");
+
+      if (
+        state.deferred &&
+        state.deferredTool &&
+        permissionHookConfig &&
+        options.awaitPermissionDecision
+      ) {
+        // Capture the decision; persist it under the deferred tool's id; resume.
+        // If the user aborts (signal), the awaitPermissionDecision contract is
+        // expected to reject and we fall through to the failed-emit branch.
+        let decision: PermissionDecision;
+        try {
+          decision = await options.awaitPermissionDecision(state.deferredTool);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          emit(state, {
+            type: "run_failed",
+            payload: { error: message, subtype: "permission_aborted" },
+          });
+          return { claudeSessionId: lastClaudeSessionId, exitCode };
+        }
+        persistPermissionDecision({
+          scratchDir: permissionHookConfig.scratchDir,
+          runId: permissionHookConfig.runId,
+          toolUseId: state.deferredTool.tool_use_id,
+          behavior: decision.behavior,
+          reason: decision.reason,
+        });
+        resumeId = lastClaudeSessionId;
+        firstIteration = false;
+        useStreamInputThisIteration = false;
+        continue;
+      }
+
+      if (!state.terminalEmitted) {
+        emit(state, {
+          type: "run_failed",
+          payload: {
+            error:
+              stderrAggregate.trim() ||
+              `claude exited with code ${exitCode} before emitting a result event`,
+            subtype: "harness_no_result",
+          },
+        });
+      }
+
+      return { claudeSessionId: lastClaudeSessionId, exitCode };
+    }
   } finally {
     mcpConfig?.cleanup();
+    permissionHookConfig?.cleanup();
   }
 }
 
@@ -138,6 +247,13 @@ export function buildArgs(
   options: HarnessOptions,
   mcpConfig: MaterializedMcpConfig | null = null,
   useStreamInput = false,
+  permissionHookConfig: PermissionHookConfig | null = null,
+  /**
+   * False on resume iterations. Skips the positional prompt/stream-json input
+   * because the prompt was already delivered on the first invocation and the
+   * resume run only retries the deferred tool with the saved hook decision.
+   */
+  includeUserInput = true,
 ): string[] {
   // --add-dir is variadic: it consumes every following non-flag token until the
   // next flag. If it lands directly before the positional prompt, claude swallows
@@ -157,11 +273,18 @@ export function buildArgs(
     "--verbose",
   );
 
-  if (useStreamInput) {
+  if (useStreamInput && includeUserInput) {
     args.push("--input-format", "stream-json");
   }
   if (mcpConfig) {
     args.push("--mcp-config", mcpConfig.path);
+  }
+  if (permissionHookConfig) {
+    // Pin the settings to ours alone so host-machine ~/.claude/settings.json
+    // hooks don't fire inside ClaudeOS-spawned runs.
+    args.push("--settings", permissionHookConfig.settingsPath);
+    args.push("--setting-sources", "");
+    args.push("--include-hook-events");
   }
   if (options.resumeClaudeSessionId) {
     args.push("--resume", options.resumeClaudeSessionId);
@@ -176,9 +299,11 @@ export function buildArgs(
     args.push("--permission-mode", request.permission_mode);
   }
 
-  // Positional prompt only in text-input mode. Stream-json delivers the prompt
-  // through stdin as a typed user message.
-  if (!useStreamInput) {
+  // Positional prompt only in text-input mode AND on the first iteration.
+  // Stream-json delivers the prompt through stdin as a typed user message.
+  // Resume iterations carry no new user input — the deferred tool retries
+  // automatically with the hook's saved decision.
+  if (!useStreamInput && includeUserInput) {
     args.push(request.instruction);
   }
   return args;
@@ -192,11 +317,18 @@ function writeStreamInput(
   stdin.end();
 }
 
-function buildEnv(options: HarnessOptions): NodeJS.ProcessEnv {
+function buildEnv(
+  options: HarnessOptions,
+  permissionHookConfig: PermissionHookConfig | null = null,
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   const token = options.claudeOauthToken ?? process.env.CLAUDE_CODE_OAUTH_TOKEN;
   if (token) {
     env.CLAUDE_CODE_OAUTH_TOKEN = token;
+  }
+  if (permissionHookConfig) {
+    env.CLAUDEOS_RUN_ID = permissionHookConfig.runId;
+    env.CLAUDEOS_SCRATCH_DIR = permissionHookConfig.scratchDir;
   }
   return env;
 }
@@ -245,6 +377,8 @@ export function parseStream(
     contentBlockTypes: new Map(),
     terminalEmitted: false,
     onEvent: (e) => events.push(e),
+    deferred: false,
+    deferredTool: null,
   };
   for (const line of lines) handleLine(line, state);
   return events;
@@ -259,6 +393,13 @@ interface ParserState {
   contentBlockTypes: Map<number, string>;
   terminalEmitted: boolean;
   onEvent: (event: RunEvent) => void;
+  /**
+   * Set when claude exits with stop_reason:"tool_deferred" (xh4.2). The harness
+   * checks this after stream close to decide whether to await a permission
+   * decision and re-spawn with --resume rather than emit run_completed.
+   */
+  deferred: boolean;
+  deferredTool: PermissionRequestPayload | null;
 }
 
 function handleLine(line: string, state: ParserState): void {
@@ -434,6 +575,30 @@ function handleResult(
 ): void {
   const sessionId = stringOr(message.session_id, "");
   if (sessionId && !state.claudeSessionId) state.claudeSessionId = sessionId;
+
+  // xh4.2: when the PreToolUse hook returned `defer`, claude exits with
+  // stop_reason:"tool_deferred" and surfaces the deferred tool's full input
+  // via `deferred_tool_use`. Translate that into a permission_request event
+  // and let the outer harness loop await the user's decision before emitting
+  // any terminal event.
+  const stopReason = stringOr(message.stop_reason, "");
+  if (stopReason === "tool_deferred") {
+    const deferred = isObject(message.deferred_tool_use) ? message.deferred_tool_use : null;
+    if (deferred) {
+      const payload: PermissionRequestPayload = {
+        tool_use_id: stringOr(deferred.id, ""),
+        tool_name: stringOr(deferred.name, ""),
+        input: deferred.input,
+        // claude doesn't supply a reason here — the hook's decisionReason is
+        // surfaced via --include-hook-events but we don't currently route it.
+        reason: "",
+      };
+      state.deferred = true;
+      state.deferredTool = payload;
+      emit(state, { type: "permission_request", payload });
+    }
+    return;
+  }
 
   const subtype = stringOr(message.subtype, "unknown");
   const isError = message.is_error === true || subtype !== "success";

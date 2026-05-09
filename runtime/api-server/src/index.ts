@@ -156,6 +156,13 @@ export interface ServerOptions {
    * present, so Claude Code can drive a real browser.
    */
   browserMcpBin?: string | null;
+  /**
+   * Absolute path to the ClaudeOS permission-hook launcher
+   * (`packages/claude-cli/permission-hook.js`). When set, runs are configured
+   * with a per-run --settings file that defers tool calls so the desktop can
+   * collect approve/deny decisions before they execute (xh4.2).
+   */
+  permissionHookBin?: string | null;
 }
 
 const DEFAULT_DEV_ORIGINS = ["http://localhost:5173"];
@@ -191,7 +198,7 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   const db = openDb(opts.dbPath ?? defaultDbPath());
   const repo = createRepo(db);
   const bus = new EventBus();
-  const runs = new RunManager(db, bus);
+  const runs = new RunManager(db, bus, { permissionHookBin: opts.permissionHookBin });
 
   const app = Fastify({ logger: { level: "info" } });
 
@@ -349,6 +356,25 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
     return { ok: true };
   });
 
+  // xh4.2: relay a user permission decision into the harness's awaited callback.
+  const PermissionResponseSchema = z.object({
+    decision: z.enum(["allow", "deny"]),
+    reason: z.string().optional(),
+  });
+  app.post<{ Params: { id: string } }>(
+    "/runs/:id/permission",
+    async (request, reply) => {
+      const parsed = PermissionResponseSchema.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: parsed.error.format() });
+      const ok = runs.respondToPermission(request.params.id, {
+        behavior: parsed.data.decision,
+        reason: parsed.data.reason,
+      });
+      if (!ok) return reply.code(404).send({ error: "no pending permission for this run" });
+      return { ok: true };
+    },
+  );
+
   // -- WebSocket: live event stream per run ---------------------------------
 
   app.get<{ Params: { id: string } }>(
@@ -405,7 +431,14 @@ async function main(): Promise<void> {
   const host = process.env.CLAUDEOS_HOST ?? "127.0.0.1";
   const corsOrigins = parseCorsOriginsEnv(process.env.CLAUDEOS_CORS_ORIGINS);
   const browserMcpBin = process.env.CLAUDEOS_BROWSER_MCP_BIN ?? null;
-  const app = await createServer({ port, host, corsOrigins, browserMcpBin });
+  const permissionHookBin = process.env.CLAUDEOS_PERMISSION_HOOK_BIN ?? null;
+  const app = await createServer({
+    port,
+    host,
+    corsOrigins,
+    browserMcpBin,
+    permissionHookBin,
+  });
   app.log.info(`ClaudeOS api-server listening on ${host}:${port}`);
 }
 

@@ -38,6 +38,20 @@ export interface WorkspaceState {
   pendingAttachments: Attachment[];
   /** Stats from the most recent completed run; null until at least one finishes. */
   lastTurnStats: TurnStats | null;
+  /**
+   * Permission request awaiting the user's decision (xh4.2). Set when the
+   * harness emits a `permission_request` event mid-stream; cleared when the
+   * user picks allow/deny.
+   */
+  pendingPermission: PendingPermission | null;
+}
+
+export interface PendingPermission {
+  runId: string;
+  toolUseId: string;
+  toolName: string;
+  input: unknown;
+  reason: string;
 }
 
 export interface TurnStats {
@@ -81,7 +95,8 @@ export type Action =
       type: "ATTACHMENT_REMOVED";
       workspaceId: string;
       workspacePath: string;
-    };
+    }
+  | { type: "PERMISSION_RESOLVED"; workspaceId: string };
 
 export function appReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -100,6 +115,7 @@ export function appReducer(state: AppState, action: Action): AppState {
         activeRunId: null,
         pendingAttachments: [],
         lastTurnStats: null,
+        pendingPermission: null,
       };
       return {
         byId: { ...state.byId, [id]: slot },
@@ -189,6 +205,18 @@ export function appReducer(state: AppState, action: Action): AppState {
                 cost_usd: action.event.payload.cost_usd,
               }
             : s.lastTurnStats,
+        // xh4.2: permission requests stage on the slot until the user decides.
+        // Run-level activeRunId tells the UI which runId to POST the response to.
+        pendingPermission:
+          action.event.type === "permission_request" && s.activeRunId
+            ? {
+                runId: s.activeRunId,
+                toolUseId: action.event.payload.tool_use_id,
+                toolName: action.event.payload.tool_name,
+                input: action.event.payload.input,
+                reason: action.event.payload.reason,
+              }
+            : s.pendingPermission,
       }));
 
     case "RUN_FINISHED":
@@ -197,6 +225,9 @@ export function appReducer(state: AppState, action: Action): AppState {
         streaming: false,
         activeRunId: null,
         error: action.error ?? s.error,
+        // If the run ended without the user responding (e.g. cancel, timeout,
+        // or a hook that resolved itself), drop any stale prompt.
+        pendingPermission: null,
       }));
 
     case "ERROR_SET":
@@ -225,6 +256,12 @@ export function appReducer(state: AppState, action: Action): AppState {
         pendingAttachments: s.pendingAttachments.filter(
           (a) => a.workspace_path !== action.workspacePath,
         ),
+      }));
+
+    case "PERMISSION_RESOLVED":
+      return updateSlot(state, action.workspaceId, (s) => ({
+        ...s,
+        pendingPermission: null,
       }));
 
     default: {

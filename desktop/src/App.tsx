@@ -198,6 +198,25 @@ export function App() {
     [],
   );
 
+  const handlePermissionDecision = useCallback(
+    async (workspaceId: string, decision: "allow" | "deny") => {
+      const slot = state.byId[workspaceId];
+      const pending = slot?.pendingPermission;
+      if (!pending) return;
+      try {
+        await api.respondToPermission(pending.runId, { decision });
+        dispatch({ type: "PERMISSION_RESOLVED", workspaceId });
+      } catch (e) {
+        dispatch({
+          type: "ERROR_SET",
+          workspaceId,
+          error: `Permission response failed: ${String(e)}`,
+        });
+      }
+    },
+    [state.byId],
+  );
+
   const handleCancel = useCallback(
     async (workspaceId: string) => {
       const slot = state.byId[workspaceId];
@@ -251,6 +270,9 @@ export function App() {
               handleRemoveAttachment(activeSlot.workspace.id, path)
             }
             onCancel={() => void handleCancel(activeSlot.workspace.id)}
+            onPermissionDecision={(decision) =>
+              void handlePermissionDecision(activeSlot.workspace.id, decision)
+            }
           />
         ) : (
           <Empty hasWorkspaces={workspaces.length > 0} />
@@ -480,9 +502,17 @@ interface ChatViewProps {
   onUpload: (files: File[]) => void;
   onRemoveAttachment: (workspacePath: string) => void;
   onCancel: () => void;
+  onPermissionDecision: (decision: "allow" | "deny") => void;
 }
 
-function ChatView({ slot, onSend, onUpload, onRemoveAttachment, onCancel }: ChatViewProps) {
+function ChatView({
+  slot,
+  onSend,
+  onUpload,
+  onRemoveAttachment,
+  onCancel,
+  onPermissionDecision,
+}: ChatViewProps) {
   const [input, setInput] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -593,6 +623,14 @@ function ChatView({ slot, onSend, onUpload, onRemoveAttachment, onCancel }: Chat
           </div>
         )}
       </main>
+
+      {slot.pendingPermission && (
+        <PermissionPromptModal
+          permission={slot.pendingPermission}
+          onAllow={() => onPermissionDecision("allow")}
+          onDeny={() => onPermissionDecision("deny")}
+        />
+      )}
 
       {slot.pendingAttachments.length > 0 && (
         <AttachmentStrip
@@ -709,6 +747,94 @@ function formatNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
+}
+
+interface PermissionPromptModalProps {
+  permission: NonNullable<WorkspaceState["pendingPermission"]>;
+  onAllow: () => void;
+  onDeny: () => void;
+}
+
+function PermissionPromptModal({ permission, onAllow, onDeny }: PermissionPromptModalProps) {
+  const inputJson = (() => {
+    try {
+      return JSON.stringify(permission.input, null, 2);
+    } catch {
+      return String(permission.input);
+    }
+  })();
+  return (
+    <div
+      style={{
+        borderTop: "1px solid #5a4810",
+        background: "#1a1605",
+        padding: "12px 16px",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 11,
+          letterSpacing: 0.4,
+          textTransform: "uppercase",
+          color: "#e0c167",
+          marginBottom: 6,
+        }}
+      >
+        Claude wants to use a tool
+      </div>
+      <div style={{ fontSize: 13, marginBottom: 8 }}>
+        <strong style={{ color: "#e0c167" }}>{permission.toolName}</strong>
+      </div>
+      <pre
+        style={{
+          background: "#0e0e0e",
+          border: "1px solid #2a2a2a",
+          borderRadius: 4,
+          padding: "8px 10px",
+          margin: 0,
+          fontSize: 11,
+          fontFamily: "JetBrains Mono, Menlo, Consolas, monospace",
+          maxHeight: 160,
+          overflowY: "auto",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+      >
+        {inputJson}
+      </pre>
+      {permission.reason && (
+        <div style={{ marginTop: 6, fontSize: 11, color: "#b0b0b0" }}>
+          {permission.reason}
+        </div>
+      )}
+      <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+        <button
+          onClick={onAllow}
+          style={{
+            ...btn,
+            padding: "6px 14px",
+            background: "#1a3a2a",
+            borderColor: "#2d6444",
+            color: "#5fdcb6",
+          }}
+        >
+          Allow
+        </button>
+        <button
+          onClick={onDeny}
+          style={{
+            ...btn,
+            padding: "6px 14px",
+            background: "#3a1010",
+            borderColor: "#5a2a2a",
+            color: "#ff8c8c",
+          }}
+        >
+          Deny
+        </button>
+      </div>
+    </div>
+  );
 }
 
 interface AttachmentStripProps {

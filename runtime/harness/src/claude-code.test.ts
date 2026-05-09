@@ -317,6 +317,80 @@ test("buildArgs inserts --mcp-config <path> before --resume/--model when servers
   }
 });
 
+test("xh4.2: result with stop_reason=tool_deferred emits permission_request, NOT run_completed/failed", () => {
+  const events = parseStream(REQ, [
+    j({
+      type: "result",
+      subtype: "success",
+      session_id: "claude-sess-a",
+      stop_reason: "tool_deferred",
+      terminal_reason: "tool_deferred",
+      duration_ms: 1234,
+      num_turns: 1,
+      total_cost_usd: 0.01,
+      result: "",
+      usage: {},
+      deferred_tool_use: {
+        id: "toolu_01abcdef",
+        name: "Bash",
+        input: { command: "echo hi", description: "test" },
+      },
+    }),
+  ]);
+  assert.equal(events.length, 1);
+  const ev = events[0];
+  assert.equal(ev.type, "permission_request");
+  if (ev.type !== "permission_request") throw new Error("type narrow");
+  assert.equal(ev.payload.tool_use_id, "toolu_01abcdef");
+  assert.equal(ev.payload.tool_name, "Bash");
+  assert.deepEqual(ev.payload.input, { command: "echo hi", description: "test" });
+});
+
+test("xh4.2: result with normal stop_reason still emits run_completed", () => {
+  const events = parseStream(REQ, [
+    j({
+      type: "result",
+      subtype: "success",
+      session_id: "claude-sess-a",
+      stop_reason: "end_turn",
+      duration_ms: 100,
+      num_turns: 1,
+      total_cost_usd: 0.001,
+      result: "done",
+      usage: {},
+    }),
+  ]);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "run_completed");
+});
+
+test("xh4.2: buildArgs adds --settings, --setting-sources \"\", --include-hook-events when hook config is set", async () => {
+  const { buildPermissionHookConfig } = await import("./permission-hook-config.js");
+  const handle = buildPermissionHookConfig({
+    hookBinaryPath: "/path/to/permission-hook.js",
+    runId: "run-test-1",
+  });
+  try {
+    const args = buildArgs(REQ, { workspaceDir: "/ws", onEvent: () => {} }, null, false, handle);
+    const settingsIdx = args.indexOf("--settings");
+    assert.notEqual(settingsIdx, -1, "--settings flag must be present");
+    assert.equal(args[settingsIdx + 1], handle.settingsPath);
+    const sourcesIdx = args.indexOf("--setting-sources");
+    assert.notEqual(sourcesIdx, -1, "--setting-sources must be present");
+    assert.equal(args[sourcesIdx + 1], "");
+    assert.ok(args.includes("--include-hook-events"), "--include-hook-events must be on");
+  } finally {
+    handle.cleanup();
+  }
+});
+
+test("xh4.2: buildArgs with includeUserInput=false drops the positional prompt (resume case)", () => {
+  const argsFresh = buildArgs(REQ, { workspaceDir: "/ws", onEvent: () => {} }, null, false, null, true);
+  const argsResume = buildArgs(REQ, { workspaceDir: "/ws", onEvent: () => {} }, null, false, null, false);
+  assert.ok(argsFresh.includes("hello"), "fresh run must include the instruction as positional");
+  assert.ok(!argsResume.includes("hello"), "resume must drop the instruction (no new user input)");
+});
+
 test("malformed lines and unknown types are ignored without throwing", () => {
   const events = parseStream(REQ, [
     "not json",

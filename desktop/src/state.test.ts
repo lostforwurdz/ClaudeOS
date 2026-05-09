@@ -256,6 +256,85 @@ test("lastTurnStats survives the next USER_SENT (so the user can still see them 
   assert.equal(state.byId.a.lastTurnStats.cost_usd, 0.001);
 });
 
+test("xh4.2: permission_request event stages a pendingPermission keyed by activeRunId", () => {
+  const event: RunEvent = {
+    type: "permission_request",
+    session_id: "s",
+    input_id: "i",
+    sequence: 4,
+    timestamp: "x",
+    payload: {
+      tool_use_id: "toolu_01abc",
+      tool_name: "Bash",
+      input: { command: "rm -rf foo" },
+      reason: "destructive command",
+    },
+  };
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    {
+      type: "USER_SENT",
+      workspaceId: "a",
+      message: { id: "u1", role: "user", text: "go" },
+      runId: "run-pending-1",
+    },
+    { type: "RUN_EVENT", workspaceId: "a", event },
+  ]);
+  const pending = state.byId.a.pendingPermission;
+  assert.ok(pending);
+  assert.equal(pending.runId, "run-pending-1");
+  assert.equal(pending.toolUseId, "toolu_01abc");
+  assert.equal(pending.toolName, "Bash");
+  assert.deepEqual(pending.input, { command: "rm -rf foo" });
+  assert.equal(pending.reason, "destructive command");
+});
+
+test("xh4.2: PERMISSION_RESOLVED clears pendingPermission", () => {
+  const event: RunEvent = {
+    type: "permission_request",
+    session_id: "s",
+    input_id: "i",
+    sequence: 0,
+    timestamp: "x",
+    payload: { tool_use_id: "tu", tool_name: "Bash", input: {}, reason: "" },
+  };
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    {
+      type: "USER_SENT",
+      workspaceId: "a",
+      message: { id: "u", role: "user", text: "go" },
+      runId: "r1",
+    },
+    { type: "RUN_EVENT", workspaceId: "a", event },
+    { type: "PERMISSION_RESOLVED", workspaceId: "a" },
+  ]);
+  assert.equal(state.byId.a.pendingPermission, null);
+});
+
+test("xh4.2: RUN_FINISHED also drops a stale pendingPermission", () => {
+  const event: RunEvent = {
+    type: "permission_request",
+    session_id: "s",
+    input_id: "i",
+    sequence: 0,
+    timestamp: "x",
+    payload: { tool_use_id: "tu", tool_name: "Bash", input: {}, reason: "" },
+  };
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    {
+      type: "USER_SENT",
+      workspaceId: "a",
+      message: { id: "u", role: "user", text: "go" },
+      runId: "r1",
+    },
+    { type: "RUN_EVENT", workspaceId: "a", event },
+    { type: "RUN_FINISHED", workspaceId: "a" },
+  ]);
+  assert.equal(state.byId.a.pendingPermission, null);
+});
+
 test("RUN_FINISHED clears streaming and activeRunId, accepts an optional error", () => {
   const state = reduce([
     { type: "WORKSPACE_OPENED", workspace: ws("a") },

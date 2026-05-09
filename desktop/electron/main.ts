@@ -78,9 +78,30 @@ function resolveBrowserMcpEntry(): string | null {
   return null;
 }
 
+/**
+ * xh4.2: locate the bundled permission-hook launcher so the api-server can
+ * point claude's --settings at it. Layout mirrors the bundled CLI resolver
+ * (packaged: extraResources copy; dev: walk up to repo root).
+ */
+function resolvePermissionHookEntry(): string | null {
+  const packaged = join(process.resourcesPath, "claude-cli", "permission-hook.js");
+  const devCandidates = [
+    resolve(__dirname, "..", "..", "..", "packages", "claude-cli", "permission-hook.js"),
+    resolve(__dirname, "..", "..", "packages", "claude-cli", "permission-hook.js"),
+  ];
+  if (app.isPackaged) {
+    return existsSync(packaged) ? packaged : null;
+  }
+  for (const path of devCandidates) {
+    if (existsSync(path)) return path;
+  }
+  return null;
+}
+
 function spawnApiServer(claudePath: string): ChildProcess {
   const apiServerEntry = resolveApiServerEntry();
   const browserMcp = resolveBrowserMcpEntry();
+  const permissionHook = resolvePermissionHookEntry();
   const child = spawn(process.execPath, [apiServerEntry], {
     env: {
       ...process.env,
@@ -90,6 +111,7 @@ function spawnApiServer(claudePath: string): ChildProcess {
       // GUI session inherited a stripped PATH (common on macOS).
       CLAUDEOS_CLAUDE_BINARY: claudePath,
       ...(browserMcp ? { CLAUDEOS_BROWSER_MCP_BIN: browserMcp } : {}),
+      ...(permissionHook ? { CLAUDEOS_PERMISSION_HOOK_BIN: permissionHook } : {}),
     },
     stdio: "inherit",
   });

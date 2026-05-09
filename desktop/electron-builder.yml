@@ -50,6 +50,10 @@ extraResources:
   - from: "../packages/claude-cli/node_modules"
     to: "claude-cli/node_modules"
     filter: ["**/*", "!**/.cache", "!**/test", "!**/tests", "!**/*.md"]
+  # Permission-hook launcher (xh4.2). Resolved by main.ts at
+  # <resourcesPath>/claude-cli/permission-hook.js.
+  - from: "../packages/claude-cli/permission-hook.js"
+    to: "claude-cli/permission-hook.js"
 
 asar: true
 # Native modules that can't run from inside the asar archive.

@@ -80,6 +80,17 @@ export const api = {
     const res = await fetch(`${API_BASE}/workspaces/${id}`, { method: "DELETE" });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   },
+  async respondToPermission(
+    runId: string,
+    body: { decision: "allow" | "deny"; reason?: string },
+  ): Promise<void> {
+    const res = await fetch(`${API_BASE}/runs/${runId}/permission`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  },
   streamRun(runId: string, onEvent: (event: RunEvent) => void): () => void {
     const ws = new WebSocket(`${wsBase()}/runs/${runId}/stream`);
     ws.onmessage = (msg) => {
