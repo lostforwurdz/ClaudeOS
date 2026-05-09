@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import type {
+  Attachment,
   RunEvent,
   Session,
   Workspace,
@@ -195,6 +196,67 @@ test("applyEvent: text_delta merges chunks under the same message_id", () => {
   const out = applyEvent(applyEvent(m1, e1), e2);
   assert.equal(out.length, 1);
   assert.equal(out[0].text, "Hello");
+});
+
+const att = (path: string, kind: "image" | "file" = "image"): Attachment => ({
+  kind,
+  workspace_path: path,
+  mime_type: kind === "image" ? "image/png" : "application/pdf",
+});
+
+test("ATTACHMENT_ADDED queues an attachment on the workspace's pending list", () => {
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "ATTACHMENT_ADDED", workspaceId: "a", attachment: att("uploads/u1-x.png") },
+    { type: "ATTACHMENT_ADDED", workspaceId: "a", attachment: att("uploads/u2-y.pdf", "file") },
+  ]);
+  assert.equal(state.byId.a.pendingAttachments.length, 2);
+  assert.equal(state.byId.a.pendingAttachments[0].workspace_path, "uploads/u1-x.png");
+  assert.equal(state.byId.a.pendingAttachments[1].kind, "file");
+});
+
+test("ATTACHMENT_ADDED de-dupes by workspace_path", () => {
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "ATTACHMENT_ADDED", workspaceId: "a", attachment: att("uploads/u1-x.png") },
+    { type: "ATTACHMENT_ADDED", workspaceId: "a", attachment: att("uploads/u1-x.png") },
+  ]);
+  assert.equal(state.byId.a.pendingAttachments.length, 1);
+});
+
+test("ATTACHMENT_REMOVED drops the matching path and leaves siblings alone", () => {
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "ATTACHMENT_ADDED", workspaceId: "a", attachment: att("uploads/u1-x.png") },
+    { type: "ATTACHMENT_ADDED", workspaceId: "a", attachment: att("uploads/u2-y.pdf", "file") },
+    { type: "ATTACHMENT_REMOVED", workspaceId: "a", workspacePath: "uploads/u1-x.png" },
+  ]);
+  assert.equal(state.byId.a.pendingAttachments.length, 1);
+  assert.equal(state.byId.a.pendingAttachments[0].workspace_path, "uploads/u2-y.pdf");
+});
+
+test("USER_SENT clears pendingAttachments so the next message starts clean", () => {
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "ATTACHMENT_ADDED", workspaceId: "a", attachment: att("uploads/u1-x.png") },
+    {
+      type: "USER_SENT",
+      workspaceId: "a",
+      message: { id: "u1", role: "user", text: "look" },
+      runId: "r1",
+    },
+  ]);
+  assert.deepEqual(state.byId.a.pendingAttachments, []);
+});
+
+test("attachments are scoped to their workspace", () => {
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "WORKSPACE_OPENED", workspace: ws("b") },
+    { type: "ATTACHMENT_ADDED", workspaceId: "a", attachment: att("uploads/u1-x.png") },
+  ]);
+  assert.equal(state.byId.a.pendingAttachments.length, 1);
+  assert.equal(state.byId.b.pendingAttachments.length, 0);
 });
 
 test("applyEvent: tool_call and tool_result append distinct tool messages", () => {

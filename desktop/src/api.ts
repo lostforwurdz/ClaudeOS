@@ -1,4 +1,5 @@
 import type {
+  Attachment,
   CreateSessionBody,
   CreateWorkspaceBody,
   RunEvent,
@@ -40,6 +41,16 @@ export const api = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+      }),
+    );
+  },
+  async uploadFile(workspaceId: string, file: File): Promise<Attachment> {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    return jsonOrThrow(
+      await fetch(`${API_BASE}/workspaces/${workspaceId}/uploads`, {
+        method: "POST",
+        body: form,
       }),
     );
   },

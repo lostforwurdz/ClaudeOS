@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
-import type { Workspace } from "@claudeos/runtime-client/contracts";
+import type { Attachment, Workspace } from "@claudeos/runtime-client/contracts";
 
 import { api } from "./api.js";
 import {
@@ -88,12 +88,15 @@ export function App() {
         text: trimmed,
       };
 
+      const attachments = slot.pendingAttachments;
+
       try {
         const submitted = await api.submitRun({
           workspace_id: workspaceId,
           session_id: slot.session.id,
           input_id: inputId,
           instruction: trimmed,
+          ...(attachments.length > 0 ? { attachments } : {}),
         });
         dispatch({
           type: "USER_SENT",
@@ -125,6 +128,31 @@ export function App() {
     [state.byId],
   );
 
+  const handleUpload = useCallback(
+    async (workspaceId: string, files: File[]) => {
+      for (const file of files) {
+        try {
+          const attachment = await api.uploadFile(workspaceId, file);
+          dispatch({ type: "ATTACHMENT_ADDED", workspaceId, attachment });
+        } catch (e) {
+          dispatch({
+            type: "ERROR_SET",
+            workspaceId,
+            error: `Upload failed (${file.name}): ${String(e)}`,
+          });
+        }
+      }
+    },
+    [],
+  );
+
+  const handleRemoveAttachment = useCallback(
+    (workspaceId: string, workspacePath: string) => {
+      dispatch({ type: "ATTACHMENT_REMOVED", workspaceId, workspacePath });
+    },
+    [],
+  );
+
   const activeSlot = state.activeId ? state.byId[state.activeId] : null;
   const openWorkspaces = state.openOrder.map((id) => state.byId[id]);
 
@@ -148,7 +176,14 @@ export function App() {
           </div>
         )}
         {activeSlot ? (
-          <ChatView slot={activeSlot} onSend={(text) => void handleSend(activeSlot.workspace.id, text)} />
+          <ChatView
+            slot={activeSlot}
+            onSend={(text) => void handleSend(activeSlot.workspace.id, text)}
+            onUpload={(files) => void handleUpload(activeSlot.workspace.id, files)}
+            onRemoveAttachment={(path) =>
+              handleRemoveAttachment(activeSlot.workspace.id, path)
+            }
+          />
         ) : (
           <Empty hasWorkspaces={workspaces.length > 0} />
         )}
@@ -322,11 +357,15 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 interface ChatViewProps {
   slot: WorkspaceState;
   onSend: (text: string) => void;
+  onUpload: (files: File[]) => void;
+  onRemoveAttachment: (workspacePath: string) => void;
 }
 
-function ChatView({ slot, onSend }: ChatViewProps) {
+function ChatView({ slot, onSend, onUpload, onRemoveAttachment }: ChatViewProps) {
   const [input, setInput] = useState("");
+  const [dragActive, setDragActive] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -336,6 +375,32 @@ function ChatView({ slot, onSend }: ChatViewProps) {
     if (!input.trim() || slot.streaming) return;
     onSend(input);
     setInput("");
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes("Files")) {
+      e.dataTransfer.dropEffect = "copy";
+      if (!dragActive) setDragActive(true);
+    }
+  };
+  const handleDragLeave = (e: React.DragEvent) => {
+    // Only clear when the cursor actually leaves the drop target — DOM
+    // dispatches dragleave on every child crossing too.
+    if (e.currentTarget === e.target) setDragActive(false);
+  };
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+    const files = Array.from(e.dataTransfer.files ?? []);
+    if (files.length > 0) onUpload(files);
+  };
+
+  const handleFilePicked = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length > 0) onUpload(files);
+    // Allow re-picking the same file later.
+    e.target.value = "";
   };
 
   return (
@@ -361,10 +426,22 @@ function ChatView({ slot, onSend }: ChatViewProps) {
         )}
       </header>
 
-      <main style={{ flex: 1, overflowY: "auto", padding: 16 }}>
+      <main
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          padding: 16,
+          position: "relative",
+          outline: dragActive ? "2px dashed #5fdcb6" : "none",
+          outlineOffset: -8,
+        }}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
         {slot.messages.length === 0 && (
           <div style={{ opacity: 0.4, fontSize: 12 }}>
-            {slot.session ? "Type a message below." : "Connecting session…"}
+            {slot.session ? "Type a message below or drop files to attach." : "Connecting session…"}
           </div>
         )}
         {slot.messages.map((m) => (
@@ -376,7 +453,32 @@ function ChatView({ slot, onSend }: ChatViewProps) {
           </div>
         )}
         <div ref={messagesEndRef} />
+        {dragActive && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 16,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "rgba(20, 40, 32, 0.6)",
+              color: "#5fdcb6",
+              fontSize: 13,
+              pointerEvents: "none",
+              borderRadius: 4,
+            }}
+          >
+            Drop to attach to next message
+          </div>
+        )}
       </main>
+
+      {slot.pendingAttachments.length > 0 && (
+        <AttachmentStrip
+          attachments={slot.pendingAttachments}
+          onRemove={onRemoveAttachment}
+        />
+      )}
 
       <footer
         style={{
@@ -384,8 +486,24 @@ function ChatView({ slot, onSend }: ChatViewProps) {
           padding: 12,
           display: "flex",
           gap: 8,
+          alignItems: "flex-start",
         }}
       >
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          onChange={handleFilePicked}
+          style={{ display: "none" }}
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={!slot.session}
+          title="Attach files"
+          style={{ ...btn, padding: "8px 10px" }}
+        >
+          📎
+        </button>
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -420,6 +538,78 @@ function ChatView({ slot, onSend }: ChatViewProps) {
         </button>
       </footer>
     </>
+  );
+}
+
+interface AttachmentStripProps {
+  attachments: Attachment[];
+  onRemove: (workspacePath: string) => void;
+}
+
+function AttachmentStrip({ attachments, onRemove }: AttachmentStripProps) {
+  return (
+    <div
+      style={{
+        borderTop: "1px solid #1e1e1e",
+        padding: "8px 12px",
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 8,
+        background: "#0a0a0a",
+      }}
+    >
+      {attachments.map((a) => (
+        <AttachmentChip key={a.workspace_path} attachment={a} onRemove={onRemove} />
+      ))}
+    </div>
+  );
+}
+
+function AttachmentChip({
+  attachment,
+  onRemove,
+}: {
+  attachment: Attachment;
+  onRemove: (workspacePath: string) => void;
+}) {
+  const filename = attachment.workspace_path.split("/").pop() ?? attachment.workspace_path;
+  // Strip the UUID-<rest> prefix for display so chips read like the original
+  // filename instead of <uuid>-foo.png.
+  const displayName = filename.replace(/^[a-f0-9-]{36}-/, "");
+  const isImage = attachment.kind === "image";
+  return (
+    <div
+      title={attachment.workspace_path}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "4px 6px 4px 8px",
+        background: "#161616",
+        border: "1px solid #2a2a2a",
+        borderRadius: 4,
+        fontSize: 11,
+        maxWidth: 200,
+      }}
+    >
+      <span style={{ opacity: 0.6 }}>{isImage ? "🖼" : "📄"}</span>
+      <span
+        style={{
+          overflow: "hidden",
+          whiteSpace: "nowrap",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {displayName}
+      </span>
+      <button
+        onClick={() => onRemove(attachment.workspace_path)}
+        title="Remove attachment"
+        style={{ ...miniBtn, opacity: 0.55 }}
+      >
+        ×
+      </button>
+    </div>
   );
 }
 

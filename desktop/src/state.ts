@@ -13,6 +13,7 @@
  */
 
 import type {
+  Attachment,
   RunEvent,
   Session,
   Workspace,
@@ -32,6 +33,8 @@ export interface WorkspaceState {
   error: string | null;
   /** Server-assigned run id of the in-flight run, if any. */
   activeRunId: string | null;
+  /** Files staged via the upload endpoint, waiting to ride along on the next send. */
+  pendingAttachments: Attachment[];
 }
 
 export interface AppState {
@@ -60,7 +63,13 @@ export type Action =
     }
   | { type: "RUN_EVENT"; workspaceId: string; event: RunEvent }
   | { type: "RUN_FINISHED"; workspaceId: string; error?: string | null }
-  | { type: "ERROR_SET"; workspaceId: string; error: string | null };
+  | { type: "ERROR_SET"; workspaceId: string; error: string | null }
+  | { type: "ATTACHMENT_ADDED"; workspaceId: string; attachment: Attachment }
+  | {
+      type: "ATTACHMENT_REMOVED";
+      workspaceId: string;
+      workspacePath: string;
+    };
 
 export function appReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -77,6 +86,7 @@ export function appReducer(state: AppState, action: Action): AppState {
         streaming: false,
         error: null,
         activeRunId: null,
+        pendingAttachments: [],
       };
       return {
         byId: { ...state.byId, [id]: slot },
@@ -116,6 +126,7 @@ export function appReducer(state: AppState, action: Action): AppState {
         streaming: true,
         error: null,
         activeRunId: action.runId,
+        pendingAttachments: [],
       }));
 
     case "RUN_EVENT":
@@ -145,6 +156,28 @@ export function appReducer(state: AppState, action: Action): AppState {
       return updateSlot(state, action.workspaceId, (s) => ({
         ...s,
         error: action.error,
+      }));
+
+    case "ATTACHMENT_ADDED":
+      return updateSlot(state, action.workspaceId, (s) =>
+        // De-dupe on workspace_path so a flaky double-fire from the OS
+        // can't smuggle the same file in twice.
+        s.pendingAttachments.some(
+          (a) => a.workspace_path === action.attachment.workspace_path,
+        )
+          ? s
+          : {
+              ...s,
+              pendingAttachments: [...s.pendingAttachments, action.attachment],
+            },
+      );
+
+    case "ATTACHMENT_REMOVED":
+      return updateSlot(state, action.workspaceId, (s) => ({
+        ...s,
+        pendingAttachments: s.pendingAttachments.filter(
+          (a) => a.workspace_path !== action.workspacePath,
+        ),
       }));
 
     default: {
