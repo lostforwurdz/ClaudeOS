@@ -30,6 +30,10 @@ export interface Message {
   toolInput?: unknown;
   toolContent?: unknown;
   toolIsError?: boolean;
+  /** Tool-use id, useful for joining call/result pairs in the timeline. */
+  toolUseId?: string;
+  /** ISO timestamp of the underlying RunEvent. xh*-rec-2 timeline data. */
+  timestamp?: string;
 }
 
 export interface WorkspaceState {
@@ -57,6 +61,12 @@ export interface WorkspaceState {
    * lives inside the HistoryPanel component, not here.
    */
   historyMode: boolean;
+  /**
+   * rec-7 (kobramaz-a17.7): active run-mode preset id (default: "default").
+   * The chat composer reads this on send and merges the matching preset's
+   * append_system_prompt + permission_mode + model into the RunRequest.
+   */
+  modeId: string;
 }
 
 export interface PendingPermission {
@@ -110,7 +120,9 @@ export type Action =
       workspacePath: string;
     }
   | { type: "PERMISSION_RESOLVED"; workspaceId: string }
-  | { type: "HISTORY_TOGGLED"; workspaceId: string; on?: boolean };
+  | { type: "HISTORY_TOGGLED"; workspaceId: string; on?: boolean }
+  | { type: "SESSION_FORKED"; workspaceId: string; session: Session }
+  | { type: "MODE_CHANGED"; workspaceId: string; modeId: string };
 
 export function appReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -131,6 +143,7 @@ export function appReducer(state: AppState, action: Action): AppState {
         lastTurnStats: null,
         pendingPermission: null,
         historyMode: false,
+        modeId: "default",
       };
       return {
         byId: { ...state.byId, [id]: slot },
@@ -285,6 +298,29 @@ export function appReducer(state: AppState, action: Action): AppState {
         historyMode: action.on ?? !s.historyMode,
       }));
 
+    case "SESSION_FORKED":
+      // rec-6: swap to a forked session and reset the per-slot UI state
+      // that doesn't carry across (messages, stats, permission). Live
+      // WebSocket teardown is the caller's job (App.tsx owns streamCloses).
+      return updateSlot(state, action.workspaceId, (s) => ({
+        ...s,
+        session: action.session,
+        messages: [],
+        streaming: false,
+        error: null,
+        activeRunId: null,
+        pendingAttachments: [],
+        lastTurnStats: null,
+        pendingPermission: null,
+        historyMode: false,
+      }));
+
+    case "MODE_CHANGED":
+      return updateSlot(state, action.workspaceId, (s) => ({
+        ...s,
+        modeId: action.modeId,
+      }));
+
     default: {
       const _exhaustive: never = action;
       void _exhaustive;
@@ -332,6 +368,8 @@ export function applyEvent(messages: Message[], event: RunEvent): Message[] {
         toolDir: "call",
         toolName: event.payload.name,
         toolInput: event.payload.input,
+        toolUseId: event.payload.tool_use_id,
+        timestamp: event.timestamp,
       },
     ];
   }
@@ -353,6 +391,8 @@ export function applyEvent(messages: Message[], event: RunEvent): Message[] {
         toolName: callMsg?.toolName,
         toolContent: event.payload.content,
         toolIsError: event.payload.is_error,
+        toolUseId: event.payload.tool_use_id,
+        timestamp: event.timestamp,
       },
     ];
   }

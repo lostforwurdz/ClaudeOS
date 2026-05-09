@@ -497,3 +497,73 @@ test("opening a workspace defaults historyMode to false", () => {
   const state = reduce([{ type: "WORKSPACE_OPENED", workspace: ws("a") }]);
   assert.equal(state.byId.a.historyMode, false);
 });
+
+// rec-6: SESSION_FORKED swaps to a forked session and clears volatile per-slot state.
+test("SESSION_FORKED replaces session, clears messages + stats + permission, exits history mode", () => {
+  const newSession: Session = {
+    id: "forked-session",
+    workspace_id: "a",
+    claude_session_id: "claude-from-history",
+    created_at: "2026-05-09T00:01:00Z",
+    updated_at: "2026-05-09T00:01:00Z",
+  };
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "SESSION_BOUND", workspaceId: "a", session: session("orig", "a") },
+    {
+      type: "USER_SENT",
+      workspaceId: "a",
+      message: { id: "u1", role: "user", text: "first" },
+      runId: "r1",
+    },
+    { type: "HISTORY_TOGGLED", workspaceId: "a", on: true },
+    { type: "SESSION_FORKED", workspaceId: "a", session: newSession },
+  ]);
+  const slot = state.byId.a;
+  assert.equal(slot.session?.id, "forked-session");
+  assert.equal(slot.session?.claude_session_id, "claude-from-history");
+  assert.deepEqual(slot.messages, []);
+  assert.equal(slot.streaming, false);
+  assert.equal(slot.activeRunId, null);
+  assert.equal(slot.lastTurnStats, null);
+  assert.equal(slot.pendingPermission, null);
+  assert.equal(slot.historyMode, false);
+});
+
+test("SESSION_FORKED on a closed workspace is a no-op", () => {
+  const newSession: Session = {
+    id: "x",
+    workspace_id: "missing",
+    claude_session_id: null,
+    created_at: "2026-05-09T00:00:00Z",
+    updated_at: "2026-05-09T00:00:00Z",
+  };
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "SESSION_FORKED", workspaceId: "missing", session: newSession },
+  ]);
+  // Original slot is untouched.
+  assert.equal(state.byId.a.session, null);
+});
+
+// rec-7: per-workspace mode preset selector
+test("workspace defaults to modeId='default' on open", () => {
+  const state = reduce([{ type: "WORKSPACE_OPENED", workspace: ws("a") }]);
+  assert.equal(state.byId.a.modeId, "default");
+});
+
+test("MODE_CHANGED swaps the active mode for a workspace", () => {
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "MODE_CHANGED", workspaceId: "a", modeId: "architect" },
+  ]);
+  assert.equal(state.byId.a.modeId, "architect");
+});
+
+test("MODE_CHANGED on a closed workspace is a no-op", () => {
+  const state = reduce([
+    { type: "WORKSPACE_OPENED", workspace: ws("a") },
+    { type: "MODE_CHANGED", workspaceId: "missing", modeId: "implement" },
+  ]);
+  assert.equal(state.byId.a.modeId, "default");
+});

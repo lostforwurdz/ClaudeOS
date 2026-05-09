@@ -69,6 +69,28 @@ export const api = {
     const res = await fetch(`${API_BASE}/runs/${runId}/cancel`, { method: "POST" });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   },
+  async getRun(runId: string): Promise<RunSummary> {
+    return jsonOrThrow(await fetch(`${API_BASE}/runs/${runId}`));
+  },
+  async dispatchParallelRuns(body: {
+    workspace_id: string;
+    prompts: Array<{
+      name: string;
+      instruction: string;
+      model?: string;
+      permission_mode?: "default" | "acceptEdits" | "plan" | "bypassPermissions";
+    }>;
+  }): Promise<{
+    runs: Array<{ run_id: string; session_id: string; worktree_path: string; name: string }>;
+  }> {
+    return jsonOrThrow(
+      await fetch(`${API_BASE}/parallel-runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+  },
   async renameWorkspace(id: string, name: string): Promise<Workspace> {
     return jsonOrThrow(
       await fetch(`${API_BASE}/workspaces/${id}`, {

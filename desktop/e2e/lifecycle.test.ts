@@ -60,8 +60,12 @@ afterEach(async () => {
 });
 
 async function launchApp(): Promise<{ application: ElectronApplication; page: Page }> {
+  // Force a per-test userData dir so localStorage prefs (theme, default
+  // workspace dir) don't bleed between tests via the shared Electron
+  // profile.
+  const userDataDir = join(tmpDir, "electron-userdata");
   const application = await electron.launch({
-    args: [MAIN_JS],
+    args: [MAIN_JS, `--user-data-dir=${userDataDir}`],
     cwd: REPO_ROOT,
     env: {
       ...process.env,

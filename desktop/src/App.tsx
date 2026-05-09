@@ -14,6 +14,7 @@ import type {
 } from "@claudeos/runtime-client/contracts";
 
 import { api } from "./api.js";
+import { findMode, MODES } from "./modes.js";
 import {
   applyEvent,
   appReducer,
@@ -23,6 +24,24 @@ import {
 } from "./state.js";
 
 type CloseFn = () => void;
+
+// rec-3: in-flight parallel run tracked at App level. Status starts at
+// "running" and is refreshed by the FanOutPanel poll loop. latestText is
+// the last assistant text snippet pulled from /runs/:id/events when the
+// run completes; running tiles show "—" until then.
+interface FanOutRun {
+  run_id: string;
+  session_id: string;
+  worktree_path: string;
+  name: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  latestText: string;
+}
+
+interface FanOutPromptInput {
+  name: string;
+  instruction: string;
+}
 
 // xh5.1: small typed wrapper around localStorage so settings keys live in one
 // place. Persisted across launches; per-machine, not per-user (single-user OS).
@@ -152,6 +171,10 @@ export function App() {
 
       const attachments = slot.pendingAttachments;
 
+      // rec-7: merge the active mode's preset into the run request. Empty
+      // strings collapse to absent fields so the api-server's defaults
+      // apply when the user is in "default" mode.
+      const mode = findMode(slot.modeId);
       try {
         const submitted = await api.submitRun({
           workspace_id: workspaceId,
@@ -159,6 +182,11 @@ export function App() {
           input_id: inputId,
           instruction: trimmed,
           ...(attachments.length > 0 ? { attachments } : {}),
+          ...(mode.appendSystemPrompt
+            ? { append_system_prompt: mode.appendSystemPrompt }
+            : {}),
+          ...(mode.permissionMode ? { permission_mode: mode.permissionMode } : {}),
+          ...(mode.model ? { model: mode.model } : {}),
         });
         dispatch({
           type: "USER_SENT",
@@ -244,6 +272,70 @@ export function App() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const handleOpenSettings = useCallback(() => setSettingsOpen(true), []);
+
+  // rec-3 (kobramaz-a17.3): fan-out state. Per-workspace map of in-flight
+  // parallel runs so each workspace tab keeps its own batch independent.
+  // Tiles poll the api-server for per-run status; no WebSocket multiplex.
+  const [fanOutByWorkspace, setFanOutByWorkspace] = useState<
+    Record<string, FanOutRun[] | undefined>
+  >({});
+  const [fanOutPromptOpen, setFanOutPromptOpen] = useState(false);
+  const handleOpenFanOut = useCallback(() => setFanOutPromptOpen(true), []);
+  const handleDispatchFanOut = useCallback(
+    async (workspaceId: string, prompts: FanOutPromptInput[]) => {
+      setFanOutPromptOpen(false);
+      try {
+        const res = await api.dispatchParallelRuns({
+          workspace_id: workspaceId,
+          prompts: prompts.map((p) => ({ name: p.name, instruction: p.instruction })),
+        });
+        const runs: FanOutRun[] = res.runs.map((r) => ({
+          ...r,
+          status: "running",
+          latestText: "",
+        }));
+        setFanOutByWorkspace((prev) => ({ ...prev, [workspaceId]: runs }));
+      } catch (e) {
+        setGlobalError(`Fan-out failed: ${String(e)}`);
+      }
+    },
+    [],
+  );
+  const handleClearFanOut = useCallback((workspaceId: string) => {
+    setFanOutByWorkspace((prev) => {
+      const next = { ...prev };
+      delete next[workspaceId];
+      return next;
+    });
+  }, []);
+
+  // rec-6 (kobramaz-a17.6): fork a historical session into a new ClaudeOS
+  // session in the active workspace. Tears down the active WS stream
+  // before swapping so events from the old run don't bleed into the new
+  // chat. Closes history mode as a side effect of SESSION_FORKED.
+  const handleForkSession = useCallback(
+    async (workspaceId: string, claudeSessionId: string) => {
+      try {
+        const close = streamCloses.current.get(workspaceId);
+        if (close) {
+          close();
+          streamCloses.current.delete(workspaceId);
+        }
+        const session = await api.createSession({
+          workspace_id: workspaceId,
+          fork_from_claude_session_id: claudeSessionId,
+        });
+        dispatch({ type: "SESSION_FORKED", workspaceId, session });
+      } catch (e) {
+        dispatch({
+          type: "ERROR_SET",
+          workspaceId,
+          error: `Fork failed: ${String(e)}`,
+        });
+      }
+    },
+    [],
+  );
 
   // xh5.1 / kobramaz-c5y: theme is a top-level concern — on mount, restore
   // the saved choice; the SettingsDialog calls setTheme to update both
@@ -424,6 +516,13 @@ export function App() {
           onClose={() => setSettingsOpen(false)}
         />
       )}
+      {fanOutPromptOpen && activeSlot && (
+        <FanOutDialog
+          workspaceName={activeSlot.workspace.name}
+          onCancel={() => setFanOutPromptOpen(false)}
+          onSubmit={(prompts) => void handleDispatchFanOut(activeSlot.workspace.id, prompts)}
+        />
+      )}
       {showShortcutsHelp && (
         <ShortcutsCheatsheet onClose={() => setShowShortcutsHelp(false)} />
       )}
@@ -448,6 +547,25 @@ export function App() {
             onToggleHistory={() =>
               dispatch({ type: "HISTORY_TOGGLED", workspaceId: activeSlot.workspace.id })
             }
+            onForkSession={(claudeSessionId) =>
+              void handleForkSession(activeSlot.workspace.id, claudeSessionId)
+            }
+            onModeChange={(modeId) =>
+              dispatch({
+                type: "MODE_CHANGED",
+                workspaceId: activeSlot.workspace.id,
+                modeId,
+              })
+            }
+            onOpenFanOut={handleOpenFanOut}
+            fanOut={fanOutByWorkspace[activeSlot.workspace.id]}
+            onUpdateFanOut={(runs) =>
+              setFanOutByWorkspace((prev) => ({
+                ...prev,
+                [activeSlot.workspace.id]: runs,
+              }))
+            }
+            onClearFanOut={() => handleClearFanOut(activeSlot.workspace.id)}
           />
         ) : (
           <Empty hasWorkspaces={workspaces.length > 0} />
@@ -684,6 +802,12 @@ interface ChatViewProps {
   onCancel: () => void;
   onPermissionDecision: (decision: "allow" | "deny") => void;
   onToggleHistory: () => void;
+  onOpenFanOut: () => void;
+  fanOut: FanOutRun[] | undefined;
+  onUpdateFanOut: (runs: FanOutRun[]) => void;
+  onClearFanOut: () => void;
+  onForkSession: (claudeSessionId: string) => void;
+  onModeChange: (modeId: string) => void;
 }
 
 function ChatView({
@@ -694,6 +818,12 @@ function ChatView({
   onCancel,
   onPermissionDecision,
   onToggleHistory,
+  onOpenFanOut,
+  fanOut,
+  onUpdateFanOut,
+  onClearFanOut,
+  onForkSession,
+  onModeChange,
 }: ChatViewProps) {
   const [input, setInput] = useState("");
   const [dragActive, setDragActive] = useState(false);
@@ -759,6 +889,21 @@ function ChatView({
             </span>
           )}
           <button
+            onClick={onOpenFanOut}
+            title="Run several prompts in parallel git worktrees (Fan-out)"
+            style={{
+              background: "var(--raisedAlt)",
+              color: "var(--text)",
+              border: "1px solid var(--borderStrong)",
+              borderRadius: 4,
+              padding: "3px 9px",
+              fontSize: 11,
+              cursor: "pointer",
+            }}
+          >
+            Fan-out
+          </button>
+          <button
             onClick={onToggleHistory}
             title={slot.historyMode ? "Back to chat" : "Browse past sessions"}
             style={{
@@ -776,8 +921,11 @@ function ChatView({
         </div>
       </header>
 
+      {fanOut && fanOut.length > 0 && (
+        <FanOutPanel runs={fanOut} onUpdate={onUpdateFanOut} onClear={onClearFanOut} />
+      )}
       {slot.historyMode ? (
-        <HistoryPanel workspaceId={slot.workspace.id} />
+        <HistoryPanel workspaceId={slot.workspace.id} onFork={onForkSession} />
       ) : (
         <>
       <main
@@ -866,6 +1014,27 @@ function ChatView({
         >
           📎
         </button>
+        <select
+          value={slot.modeId}
+          onChange={(e) => onModeChange(e.target.value)}
+          disabled={slot.streaming}
+          title={findMode(slot.modeId).description}
+          style={{
+            background: "var(--raised)",
+            color: "var(--text)",
+            border: "1px solid var(--borderStrong)",
+            borderRadius: 4,
+            padding: "8px 6px",
+            fontSize: 12,
+            cursor: "pointer",
+          }}
+        >
+          {MODES.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
         <textarea
           value={input}
           data-claudeos-composer="true"
@@ -911,7 +1080,7 @@ function ChatView({
         )}
       </footer>
       {slot.lastTurnStats && !slot.streaming && (
-        <TurnStatsBar stats={slot.lastTurnStats} />
+        <TurnStatsBar stats={slot.lastTurnStats} messages={slot.messages} />
       )}
         </>
       )}
@@ -926,9 +1095,11 @@ function ChatView({
 
 interface HistoryPanelProps {
   workspaceId: string;
+  /** rec-6: forking opens a fresh session bound to this claude_session_id. */
+  onFork: (claudeSessionId: string) => void;
 }
 
-function HistoryPanel({ workspaceId }: HistoryPanelProps) {
+function HistoryPanel({ workspaceId, onFork }: HistoryPanelProps) {
   const [sessions, setSessions] = useState<Session[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -981,6 +1152,9 @@ function HistoryPanel({ workspaceId }: HistoryPanelProps) {
           session={s}
           expanded={expanded === s.id}
           onToggle={() => setExpanded(expanded === s.id ? null : s.id)}
+          onFork={
+            s.claude_session_id ? () => onFork(s.claude_session_id!) : undefined
+          }
         />
       ))}
     </main>
@@ -991,9 +1165,11 @@ interface SessionRowProps {
   session: Session;
   expanded: boolean;
   onToggle: () => void;
+  /** rec-6: undefined when the session never bound a claude_session_id. */
+  onFork?: () => void;
 }
 
-function SessionRow({ session, expanded, onToggle }: SessionRowProps) {
+function SessionRow({ session, expanded, onToggle, onFork }: SessionRowProps) {
   return (
     <div
       style={{
@@ -1024,9 +1200,29 @@ function SessionRow({ session, expanded, onToggle }: SessionRowProps) {
             ↔ {session.claude_session_id.slice(0, 8)}
           </span>
         )}
-        <span style={{ marginLeft: "auto", opacity: 0.4, fontSize: 10 }}>
-          {expanded ? "▲" : "▼"}
-        </span>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          {onFork && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onFork();
+              }}
+              title="Fork — open a new session that resumes this conversation"
+              style={{
+                background: "var(--raisedAlt)",
+                color: "var(--text)",
+                border: "1px solid var(--borderStrong)",
+                borderRadius: 3,
+                padding: "1px 7px",
+                fontSize: 10,
+                cursor: "pointer",
+              }}
+            >
+              Fork
+            </button>
+          )}
+          <span style={{ opacity: 0.4, fontSize: 10 }}>{expanded ? "▲" : "▼"}</span>
+        </div>
       </div>
       {expanded && <SessionRuns sessionId={session.id} />}
     </div>
@@ -1168,6 +1364,329 @@ function RunEventsView({ runId }: { runId: string }) {
       ))}
     </div>
   );
+}
+
+// rec-3 (kobramaz-a17.3): fan-out dialog. Up to 4 prompts; each becomes a
+// parallel run in its own git worktree. Names must be filename-safe so
+// they end up in `~/.claudeos/worktrees/<workspace-id>/<name>-<ts>/`.
+function FanOutDialog({
+  workspaceName,
+  onCancel,
+  onSubmit,
+}: {
+  workspaceName: string;
+  onCancel: () => void;
+  onSubmit: (prompts: FanOutPromptInput[]) => void;
+}) {
+  const [prompts, setPrompts] = useState<FanOutPromptInput[]>([
+    { name: "a", instruction: "" },
+    { name: "b", instruction: "" },
+  ]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onCancel]);
+
+  const update = (i: number, patch: Partial<FanOutPromptInput>) =>
+    setPrompts((prev) => prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)));
+  const remove = (i: number) =>
+    setPrompts((prev) => prev.filter((_, idx) => idx !== i));
+  const add = () =>
+    setPrompts((prev) =>
+      prev.length >= 4
+        ? prev
+        : [...prev, { name: String.fromCharCode(97 + prev.length), instruction: "" }],
+    );
+  const submit = () => {
+    const valid = prompts.filter(
+      (p) => p.name.trim() && /^[a-zA-Z0-9_-]+$/.test(p.name) && p.instruction.trim(),
+    );
+    if (valid.length === 0) return;
+    onSubmit(valid);
+  };
+
+  return (
+    <div
+      onClick={onCancel}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "var(--backdrop)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--modalBg)",
+          border: "1px solid var(--borderStrong)",
+          borderRadius: 6,
+          padding: 18,
+          width: 540,
+          fontSize: 12,
+          lineHeight: 1.5,
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+          Fan-out — parallel runs in {workspaceName}
+        </div>
+        <div style={{ opacity: 0.6, fontSize: 11, marginBottom: 12 }}>
+          Each prompt runs in its own git worktree off HEAD. Names become
+          branch suffixes (a–z, 0–9, dash, underscore).
+        </div>
+        {prompts.map((p, i) => (
+          <div
+            key={i}
+            style={{
+              display: "flex",
+              gap: 6,
+              marginBottom: 8,
+              alignItems: "flex-start",
+            }}
+          >
+            <input
+              type="text"
+              value={p.name}
+              onChange={(e) => update(i, { name: e.target.value })}
+              placeholder="name"
+              style={{
+                width: 70,
+                padding: 6,
+                background: "var(--raised)",
+                color: "var(--text)",
+                border: "1px solid var(--borderStrong)",
+                borderRadius: 4,
+                fontSize: 11,
+                fontFamily: "monospace",
+              }}
+            />
+            <textarea
+              value={p.instruction}
+              onChange={(e) => update(i, { instruction: e.target.value })}
+              placeholder="Instruction for this run…"
+              rows={2}
+              style={{
+                flex: 1,
+                padding: 6,
+                background: "var(--raised)",
+                color: "var(--text)",
+                border: "1px solid var(--borderStrong)",
+                borderRadius: 4,
+                fontSize: 12,
+                fontFamily: "inherit",
+                resize: "vertical",
+              }}
+            />
+            {prompts.length > 1 && (
+              <button
+                onClick={() => remove(i)}
+                title="Remove this prompt"
+                style={{
+                  ...settingsBtn,
+                  padding: "4px 8px",
+                  color: "var(--errorMuted)",
+                }}
+              >
+                ×
+              </button>
+            )}
+          </div>
+        ))}
+        {prompts.length < 4 && (
+          <button onClick={add} style={{ ...settingsBtn, marginBottom: 12 }}>
+            + Add prompt
+          </button>
+        )}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onCancel} style={settingsBtn}>
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            style={{ ...settingsBtn, background: "var(--accentBg)", borderColor: "var(--accent)" }}
+          >
+            Dispatch
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// rec-3: in-flight fan-out tile panel. Polls each run's status every 3s
+// until terminal, then fetches the run's events to extract the final
+// assistant text snippet for display. No WebSocket multiplex.
+function FanOutPanel({
+  runs,
+  onUpdate,
+  onClear,
+}: {
+  runs: FanOutRun[];
+  onUpdate: (runs: FanOutRun[]) => void;
+  onClear: () => void;
+}) {
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      const next = await Promise.all(
+        runs.map(async (r) => {
+          if (r.status !== "running") return r;
+          try {
+            const status = await api.getRun(r.run_id);
+            const updated: FanOutRun = { ...r, status: status.status };
+            // When a run reaches terminal state, pull the final assistant
+            // text once so the tile shows a useful preview.
+            if (status.status !== "running" && r.latestText === "") {
+              const events = await api.listRunEvents(r.run_id);
+              const lastText = [...events]
+                .reverse()
+                .find((e) => e.type === "text_delta");
+              if (lastText && lastText.type === "text_delta") {
+                updated.latestText = lastText.payload.text;
+              }
+            }
+            return updated;
+          } catch {
+            return r;
+          }
+        }),
+      );
+      if (cancelled) return;
+      // Only push an update when something actually changed to avoid
+      // re-render storms when nothing's progressing.
+      const changed = next.some(
+        (r, i) => r.status !== runs[i].status || r.latestText !== runs[i].latestText,
+      );
+      if (changed) onUpdate(next);
+    };
+    void tick();
+    const id = setInterval(() => void tick(), 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [runs, onUpdate]);
+
+  const allDone = runs.every((r) => r.status !== "running");
+
+  return (
+    <div
+      style={{
+        borderBottom: "1px solid var(--border)",
+        background: "var(--panel)",
+        padding: "10px 16px",
+        fontSize: 12,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 8,
+        }}
+      >
+        <strong style={{ fontSize: 12 }}>Fan-out</strong>
+        <span style={{ opacity: 0.5, fontSize: 11 }}>
+          {runs.filter((r) => r.status === "running").length} running ·{" "}
+          {runs.filter((r) => r.status === "completed").length} done ·{" "}
+          {runs.filter((r) => r.status === "failed" || r.status === "cancelled").length} failed
+        </span>
+        {allDone && (
+          <button
+            onClick={onClear}
+            style={{ ...settingsBtn, marginLeft: "auto", padding: "3px 9px" }}
+          >
+            Dismiss
+          </button>
+        )}
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${Math.min(runs.length, 4)}, 1fr)`,
+          gap: 8,
+        }}
+      >
+        {runs.map((r) => (
+          <div
+            key={r.run_id}
+            style={{
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              padding: 8,
+              background: "var(--raised)",
+            }}
+          >
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+              <span
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: fanOutStatusColor(r.status),
+                }}
+              >
+                {r.name}
+              </span>
+              <span style={{ fontSize: 10, opacity: 0.6, marginLeft: "auto" }}>
+                {r.status}
+              </span>
+            </div>
+            <div
+              style={{
+                fontSize: 10,
+                opacity: 0.7,
+                lineHeight: 1.3,
+                maxHeight: 60,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+              title={r.latestText || "(no output yet)"}
+            >
+              {r.latestText
+                ? r.latestText.slice(0, 200)
+                : r.status === "running"
+                  ? "(running…)"
+                  : "(no output)"}
+            </div>
+            <div
+              style={{
+                fontSize: 10,
+                opacity: 0.4,
+                marginTop: 4,
+                fontFamily: "monospace",
+                wordBreak: "break-all",
+              }}
+              title={r.worktree_path}
+            >
+              {r.worktree_path}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function fanOutStatusColor(status: FanOutRun["status"]): string {
+  switch (status) {
+    case "completed":
+      return "var(--accent)";
+    case "failed":
+      return "var(--errorMuted)";
+    case "cancelled":
+      return "var(--warn)";
+    default:
+      return "var(--info)";
+  }
 }
 
 // xh5.4: shortcuts cheat sheet shown via Cmd/Ctrl+/. Lightweight modal — no
@@ -1388,6 +1907,21 @@ function SettingsDialog({
 
         <div style={{ marginBottom: 18 }}>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+            Quality hooks
+          </div>
+          <div style={{ opacity: 0.6, fontSize: 11, lineHeight: 1.45 }}>
+            Add <code style={{ fontFamily: "monospace" }}>PostToolUse</code> /{" "}
+            <code style={{ fontFamily: "monospace" }}>Stop</code> hooks to{" "}
+            <code style={{ fontFamily: "monospace" }}>~/.claude/settings.json</code>{" "}
+            (or per-project <code style={{ fontFamily: "monospace" }}>.claude/settings.json</code>).
+            Claude Code merges hooks across settings scopes, so they fire during ClaudeOS runs
+            alongside the built-in permission hook. Hook stderr is not yet surfaced inline —
+            check your terminal for now.
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
             Theme
           </div>
           <div style={{ display: "flex", gap: 14 }}>
@@ -1471,32 +2005,104 @@ function formatTimestamp(iso: string): string {
   return d.toLocaleString();
 }
 
-function TurnStatsBar({ stats }: { stats: NonNullable<WorkspaceState["lastTurnStats"]> }) {
+// rec-2 (kobramaz-a17.2): summary bar + expandable tool-call timeline.
+// Click the bar to expand. Cache-hit ratio surfaces here so the operator
+// can see prompt-caching effectiveness at a glance.
+function TurnStatsBar({
+  stats,
+  messages,
+}: {
+  stats: NonNullable<WorkspaceState["lastTurnStats"]>;
+  messages: Message[];
+}) {
   const { usage, duration_ms, num_turns, cost_usd } = stats;
+  const [open, setOpen] = useState(false);
+
+  const cacheTotal = usage.cache_read_input_tokens + usage.input_tokens;
+  const cacheHitRatio =
+    cacheTotal > 0 ? usage.cache_read_input_tokens / cacheTotal : 0;
+
   const parts = [
     `${formatNum(usage.input_tokens)} in`,
     `${formatNum(usage.output_tokens)} out`,
     usage.cache_read_input_tokens > 0
-      ? `${formatNum(usage.cache_read_input_tokens)} cache`
+      ? `${formatNum(usage.cache_read_input_tokens)} cache (${Math.round(cacheHitRatio * 100)}%)`
       : null,
     `$${cost_usd.toFixed(4)}`,
     `${(duration_ms / 1000).toFixed(1)}s`,
     num_turns > 1 ? `${num_turns} turns` : null,
   ].filter(Boolean);
+
+  // Build tool-call timeline rows by joining call/result pairs from the
+  // current slot's messages. Calls without a matching result (still
+  // running, or the agent skipped a result) get duration null.
+  type Row = { name: string; durationMs: number | null; isError: boolean };
+  const calls = messages.filter((m) => m.toolDir === "call" && m.toolUseId);
+  const rows: Row[] = calls.map((call) => {
+    const result = messages.find(
+      (m) => m.toolDir === "result" && m.toolUseId === call.toolUseId,
+    );
+    const dur =
+      call.timestamp && result?.timestamp
+        ? new Date(result.timestamp).getTime() - new Date(call.timestamp).getTime()
+        : null;
+    return {
+      name: call.toolName ?? "tool",
+      durationMs: dur,
+      isError: result?.toolIsError === true,
+    };
+  });
+
   return (
     <div
       style={{
         borderTop: "1px solid var(--border)",
-        padding: "4px 16px",
-        fontSize: 10,
-        color: "var(--mute)",
+        background: "var(--bg)",
         fontFamily: "JetBrains Mono, Menlo, Consolas, monospace",
         letterSpacing: 0.2,
-        background: "var(--bg)",
       }}
-      title="Last completed turn"
     >
-      {parts.join(" · ")}
+      <div
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          padding: "4px 16px",
+          fontSize: 10,
+          color: "var(--mute)",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+        }}
+        title={open ? "Click to hide tool timeline" : "Click for tool timeline"}
+      >
+        <span>{parts.join(" · ")}</span>
+        <span style={{ marginLeft: "auto", opacity: 0.6 }}>{open ? "▲" : "▼"}</span>
+      </div>
+      {open && rows.length > 0 && (
+        <div style={{ padding: "6px 16px 10px", fontSize: 10 }}>
+          <div style={{ opacity: 0.5, marginBottom: 4 }}>
+            Tool calls in last turn ({rows.length})
+          </div>
+          {rows.map((r, i) => (
+            <div
+              key={i}
+              style={{
+                display: "flex",
+                gap: 12,
+                color: r.isError ? "var(--errorMuted)" : "var(--mute)",
+              }}
+            >
+              <span style={{ flex: 1, color: "var(--text)" }}>{r.name}</span>
+              <span>
+                {r.durationMs !== null
+                  ? `${(r.durationMs / 1000).toFixed(2)}s`
+                  : "—"}
+              </span>
+              {r.isError && <span>error</span>}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
