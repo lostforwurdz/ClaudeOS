@@ -7,11 +7,11 @@
   "scripts": {
     "clean": "rm -rf out",
     "dev:renderer": "vite",
-    "dev:electron:build": "tsup electron/main.ts electron/bundled-claude.ts electron/auth-store.ts electron/auto-updater.ts electron/preload-setup.ts electron/setup-token-runner.ts --format cjs --out-dir out/electron --external electron --external electron-updater --external @lydell/node-pty --watch",
+    "dev:electron:build": "tsup electron/main.ts electron/bundled-claude.ts electron/auth-store.ts electron/auto-updater.ts electron/preload-main.ts electron/preload-setup.ts electron/setup-token-runner.ts --format cjs --out-dir out/electron --external electron --external electron-updater --external @lydell/node-pty --watch",
     "dev:electron:run": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron out/electron/main.js",
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron:build\" \"npm:dev:electron:run\"",
     "build:renderer": "vite build",
-    "build:electron": "tsup electron/main.ts electron/preflight.ts electron/bundled-claude.ts electron/auth-store.ts electron/auto-updater.ts electron/preload-setup.ts electron/setup-token-runner.ts --format cjs --out-dir out/electron --external electron --external electron-updater --external @lydell/node-pty --minify",
+    "build:electron": "tsup electron/main.ts electron/preflight.ts electron/bundled-claude.ts electron/auth-store.ts electron/auto-updater.ts electron/preload-main.ts electron/preload-setup.ts electron/setup-token-runner.ts --format cjs --out-dir out/electron --external electron --external electron-updater --external @lydell/node-pty --minify",
     "build": "npm run build:renderer && npm run build:electron",
     "prepack:runtime": "npm --prefix ../runtime/api-server run build && npm --prefix ../packages/browser-mcp run build && npm --prefix ../packages/claude-cli run install:bundle",
     "rebuild-natives": "electron-rebuild -m ../runtime/api-server -w better-sqlite3",

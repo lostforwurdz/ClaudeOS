@@ -5,15 +5,75 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ClaudeOS</title>
     <style>
-      :root {
+      /* xh5.1 / kobramaz-c5y theme palette. Variables resolved against the
+         data-theme attribute on the document root, set by App.tsx based on
+         the user's preference (default dark). Light theme inverts bg/text
+         and lightens borders; accents stay close to their dark values for
+         brand consistency. Inline styles in App.tsx use var(--name). */
+      :root, [data-theme="dark"] {
         color-scheme: dark;
+        --bg: #0a0a0a;
+        --panel: #0e0e0e;
+        --raised: #161616;
+        --raisedAlt: #1f1f1f;
+        --border: #1e1e1e;
+        --borderStrong: #2a2a2a;
+        --text: #e5e5e5;
+        --mute: #777777;
+        --modalBg: #141414;
+        --accent: #5fdcb6;
+        --accentBg: #1a3a2a;
+        --accentSolid: #2d6444;
+        --info: #7ec8e8;
+        --infoBg: #1f3a4a;
+        --infoBorder: #3a5a6a;
+        --warn: #e0c167;
+        --warnBg: #1a1605;
+        --warnBorder: #5a4810;
+        --error: #ff6464;
+        --errorMuted: #ff8c8c;
+        --errorBg: #3a1010;
+        --errorBorder: #5a2a2a;
+        --errorBorderDark: #5a2020;
+        --highlight: rgba(255,255,255,0.03);
+        --highlightStrong: rgba(255,255,255,0.04);
+        --backdrop: rgba(0,0,0,0.6);
+      }
+      [data-theme="light"] {
+        color-scheme: light;
+        --bg: #fafafa;
+        --panel: #ffffff;
+        --raised: #f3f3f3;
+        --raisedAlt: #ececec;
+        --border: #d8d8d8;
+        --borderStrong: #b8b8b8;
+        --text: #1a1a1a;
+        --mute: #6a6a6a;
+        --modalBg: #ffffff;
+        --accent: #1a8a6a;
+        --accentBg: #d8f0e4;
+        --accentSolid: #2d8d5e;
+        --info: #2a78a8;
+        --infoBg: #d8e8f4;
+        --infoBorder: #6f9ec4;
+        --warn: #b07d10;
+        --warnBg: #fdf6dc;
+        --warnBorder: #d8b450;
+        --error: #c63030;
+        --errorMuted: #d85050;
+        --errorBg: #f6dada;
+        --errorBorder: #d8a8a8;
+        --errorBorderDark: #c08888;
+        --highlight: rgba(0,0,0,0.03);
+        --highlightStrong: rgba(0,0,0,0.06);
+        --backdrop: rgba(0,0,0,0.4);
       }
       html, body, #root {
         margin: 0;
         height: 100%;
         width: 100%;
-        background: #0a0a0a;
-        color: #e5e5e5;
+        background: var(--bg);
+        color: var(--text);
         font-family: -apple-system, system-ui, "Segoe UI", sans-serif;
         font-size: 14px;
       }

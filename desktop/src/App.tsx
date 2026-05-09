@@ -27,6 +27,13 @@ type CloseFn = () => void;
 // xh5.1: small typed wrapper around localStorage so settings keys live in one
 // place. Persisted across launches; per-machine, not per-user (single-user OS).
 const PREF_DEFAULT_WORKSPACE_DIR = "claudeos.pref.defaultWorkspaceDir";
+const PREF_THEME = "claudeos.pref.theme";
+type Theme = "dark" | "light";
+
+function readTheme(): Theme {
+  const v = readPref(PREF_THEME);
+  return v === "light" ? "light" : "dark";
+}
 
 function readPref(key: string): string | null {
   try {
@@ -235,24 +242,19 @@ export function App() {
     [],
   );
 
-  const handleOpenSettings = useCallback(() => {
-    setActivePrompt({
-      title: "Settings",
-      submitLabel: "Save",
-      fields: [
-        {
-          name: "defaultWorkspaceDir",
-          label: "Default workspace directory (pre-fills the create-workspace dialog)",
-          placeholder: "/home/me/projects",
-          defaultValue: readPref(PREF_DEFAULT_WORKSPACE_DIR) ?? "",
-        },
-      ],
-      onSubmit: (values) => {
-        setActivePrompt(null);
-        writePref(PREF_DEFAULT_WORKSPACE_DIR, (values.defaultWorkspaceDir ?? "").trim());
-      },
-    });
-  }, []);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const handleOpenSettings = useCallback(() => setSettingsOpen(true), []);
+
+  // xh5.1 / kobramaz-c5y: theme is a top-level concern — on mount, restore
+  // the saved choice; the SettingsDialog calls setTheme to update both
+  // state and document.documentElement.dataset.theme so CSS vars resolve
+  // against the right palette.
+  const [theme, setTheme] = useState<Theme>(readTheme);
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.documentElement.dataset.theme = theme;
+    }
+  }, [theme]);
 
   const handleDeleteWorkspace = useCallback(
     async (workspaceId: string, name: string) => {
@@ -327,7 +329,7 @@ export function App() {
     const handler = (event: KeyboardEvent) => {
       // Don't intercept while the prompt/settings modal is open — let it own
       // its own keyboard handling.
-      if (activePrompt) return;
+      if (activePrompt || settingsOpen) return;
       const mod = event.metaKey || event.ctrlKey;
       const target = event.target as HTMLElement | null;
       const isComposer =
@@ -381,6 +383,7 @@ export function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [
     activePrompt,
+    settingsOpen,
     activeSlot,
     activateWorkspace,
     handleCancel,
@@ -390,7 +393,7 @@ export function App() {
   const openWorkspaces = state.openOrder.map((id) => state.byId[id]);
 
   return (
-    <div style={{ display: "flex", height: "100vh", color: "#e5e5e5", background: "#0e0e0e" }}>
+    <div style={{ display: "flex", height: "100vh", color: "var(--text)", background: "var(--panel)" }}>
       <Sidebar
         all={workspaces}
         open={openWorkspaces}
@@ -411,12 +414,22 @@ export function App() {
           onCancel={() => setActivePrompt(null)}
         />
       )}
+      {settingsOpen && (
+        <SettingsDialog
+          theme={theme}
+          onThemeChange={(t) => {
+            setTheme(t);
+            writePref(PREF_THEME, t);
+          }}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
       {showShortcutsHelp && (
         <ShortcutsCheatsheet onClose={() => setShowShortcutsHelp(false)} />
       )}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         {globalError && (
-          <div style={{ background: "#3a1010", color: "#ff8c8c", padding: "6px 12px", fontSize: 12 }}>
+          <div style={{ background: "var(--errorBg)", color: "var(--errorMuted)", padding: "6px 12px", fontSize: 12 }}>
             {globalError}
           </div>
         )}
@@ -476,8 +489,8 @@ function Sidebar({
     <aside
       style={{
         width: 240,
-        borderRight: "1px solid #1e1e1e",
-        background: "#0a0a0a",
+        borderRight: "1px solid var(--border)",
+        background: "var(--bg)",
         display: "flex",
         flexDirection: "column",
         flexShrink: 0,
@@ -486,7 +499,7 @@ function Sidebar({
       <div
         style={{
           padding: "10px 14px",
-          borderBottom: "1px solid #1e1e1e",
+          borderBottom: "1px solid var(--border)",
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
@@ -500,7 +513,7 @@ function Sidebar({
       </div>
 
       {open.length > 0 && (
-        <div style={{ padding: "8px 0", borderBottom: "1px solid #1e1e1e" }}>
+        <div style={{ padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
           <SectionLabel>Open</SectionLabel>
           {open.map((slot) => (
             <SidebarRow
@@ -561,10 +574,10 @@ function SidebarRow({
 }: SidebarRowProps) {
   const [hovered, setHovered] = useState(false);
   const dotColor = {
-    streaming: "#5fdcb6",
-    error: "#ff6464",
-    idle: "#777",
-    open: "#444",
+    streaming: "var(--accent)",
+    error: "var(--error)",
+    idle: "var(--mute)",
+    open: "var(--mute)",
     closed: "transparent",
   }[status];
   return (
@@ -578,7 +591,7 @@ function SidebarRow({
         alignItems: "center",
         gap: 6,
         cursor: "pointer",
-        background: active ? "#1a1a1a" : "transparent",
+        background: active ? "var(--raised)" : "transparent",
         fontSize: 12,
       }}
     >
@@ -620,7 +633,7 @@ function SidebarRow({
               e.stopPropagation();
               onDelete();
             }}
-            style={{ ...miniBtn, opacity: 0.5, fontSize: 12, color: "#ff8c8c" }}
+            style={{ ...miniBtn, opacity: 0.5, fontSize: 12, color: "var(--errorMuted)" }}
             title="Delete workspace (cascades sessions + runs)"
           >
             🗑
@@ -728,7 +741,7 @@ function ChatView({
       <header
         style={{
           padding: "10px 16px",
-          borderBottom: "1px solid #1e1e1e",
+          borderBottom: "1px solid var(--border)",
           display: "flex",
           gap: 12,
           alignItems: "center",
@@ -749,9 +762,9 @@ function ChatView({
             onClick={onToggleHistory}
             title={slot.historyMode ? "Back to chat" : "Browse past sessions"}
             style={{
-              background: slot.historyMode ? "#1f3a4a" : "#1f1f1f",
-              color: "#e5e5e5",
-              border: `1px solid ${slot.historyMode ? "#3a5a6a" : "#2a2a2a"}`,
+              background: slot.historyMode ? "var(--infoBg)" : "var(--raisedAlt)",
+              color: "var(--text)",
+              border: `1px solid ${slot.historyMode ? "var(--infoBorder)" : "var(--borderStrong)"}`,
               borderRadius: 4,
               padding: "3px 9px",
               fontSize: 11,
@@ -773,7 +786,7 @@ function ChatView({
           overflowY: "auto",
           padding: 16,
           position: "relative",
-          outline: dragActive ? "2px dashed #5fdcb6" : "none",
+          outline: dragActive ? "2px dashed var(--accent)" : "none",
           outlineOffset: -8,
         }}
         onDragOver={handleDragOver}
@@ -789,7 +802,7 @@ function ChatView({
           <MessageView key={m.id} message={m} />
         ))}
         {slot.error && (
-          <div style={{ color: "#ff6464", fontSize: 12, marginTop: 8 }}>
+          <div style={{ color: "var(--error)", fontSize: 12, marginTop: 8 }}>
             error: {slot.error}
           </div>
         )}
@@ -802,8 +815,8 @@ function ChatView({
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              background: "rgba(20, 40, 32, 0.6)",
-              color: "#5fdcb6",
+              background: "var(--accentBg)",
+              color: "var(--accent)",
               fontSize: 13,
               pointerEvents: "none",
               borderRadius: 4,
@@ -831,7 +844,7 @@ function ChatView({
 
       <footer
         style={{
-          borderTop: "1px solid #1e1e1e",
+          borderTop: "1px solid var(--border)",
           padding: 12,
           display: "flex",
           gap: 8,
@@ -869,9 +882,9 @@ function ChatView({
             flex: 1,
             minHeight: 40,
             maxHeight: 200,
-            background: "#161616",
-            color: "#e5e5e5",
-            border: "1px solid #2a2a2a",
+            background: "var(--raised)",
+            color: "var(--text)",
+            border: "1px solid var(--borderStrong)",
             borderRadius: 4,
             padding: 8,
             fontSize: 13,
@@ -882,7 +895,7 @@ function ChatView({
         {slot.streaming ? (
           <button
             onClick={onCancel}
-            style={{ ...btn, padding: "8px 16px", borderColor: "#5a2a2a", color: "#ff8c8c" }}
+            style={{ ...btn, padding: "8px 16px", borderColor: "var(--errorBorder)", color: "var(--errorMuted)" }}
             title="Stop the running tool/turn (Esc)"
           >
             Cancel
@@ -937,7 +950,7 @@ function HistoryPanel({ workspaceId }: HistoryPanelProps) {
 
   if (error) {
     return (
-      <main style={{ flex: 1, padding: 16, fontSize: 12, color: "#ff8c8c" }}>
+      <main style={{ flex: 1, padding: 16, fontSize: 12, color: "var(--errorMuted)" }}>
         Failed to load history: {error}
       </main>
     );
@@ -984,7 +997,7 @@ function SessionRow({ session, expanded, onToggle }: SessionRowProps) {
   return (
     <div
       style={{
-        border: "1px solid #1e1e1e",
+        border: "1px solid var(--border)",
         borderRadius: 4,
         marginBottom: 8,
         overflow: "hidden",
@@ -995,7 +1008,7 @@ function SessionRow({ session, expanded, onToggle }: SessionRowProps) {
         style={{
           padding: "8px 12px",
           cursor: "pointer",
-          background: expanded ? "rgba(255,255,255,0.04)" : "transparent",
+          background: expanded ? "var(--highlightStrong)" : "transparent",
           display: "flex",
           alignItems: "center",
           gap: 12,
@@ -1041,7 +1054,7 @@ function SessionRuns({ sessionId }: { sessionId: string }) {
   }, [sessionId]);
 
   if (error) {
-    return <div style={{ padding: 12, fontSize: 11, color: "#ff8c8c" }}>{error}</div>;
+    return <div style={{ padding: 12, fontSize: 11, color: "var(--errorMuted)" }}>{error}</div>;
   }
   if (runs === null) {
     return <div style={{ padding: 12, fontSize: 11, opacity: 0.5 }}>Loading runs…</div>;
@@ -1050,7 +1063,7 @@ function SessionRuns({ sessionId }: { sessionId: string }) {
     return <div style={{ padding: 12, fontSize: 11, opacity: 0.5 }}>No runs.</div>;
   }
   return (
-    <div style={{ borderTop: "1px solid #1e1e1e" }}>
+    <div style={{ borderTop: "1px solid var(--border)" }}>
       {runs.map((r) => (
         <RunRow
           key={r.id}
@@ -1074,20 +1087,20 @@ function RunRow({
 }) {
   const statusColor =
     run.status === "completed"
-      ? "#5fdcb6"
+      ? "var(--accent)"
       : run.status === "failed"
-        ? "#ff8c8c"
+        ? "var(--errorMuted)"
         : run.status === "cancelled"
-          ? "#c8a85f"
-          : "#7ec8e8";
+          ? "var(--warn)"
+          : "var(--info)";
   return (
-    <div style={{ borderBottom: "1px solid #161616" }}>
+    <div style={{ borderBottom: "1px solid var(--raised)" }}>
       <div
         onClick={onToggle}
         style={{
           padding: "6px 14px 6px 28px",
           cursor: "pointer",
-          background: expanded ? "rgba(255,255,255,0.03)" : "transparent",
+          background: expanded ? "var(--highlight)" : "transparent",
           display: "flex",
           alignItems: "center",
           gap: 10,
@@ -1138,7 +1151,7 @@ function RunEventsView({ runId }: { runId: string }) {
   }, [runId]);
 
   if (error) {
-    return <div style={{ padding: 12, fontSize: 11, color: "#ff8c8c" }}>{error}</div>;
+    return <div style={{ padding: 12, fontSize: 11, color: "var(--errorMuted)" }}>{error}</div>;
   }
   if (messages === null) {
     return <div style={{ padding: 12, fontSize: 11, opacity: 0.5 }}>Loading…</div>;
@@ -1149,7 +1162,7 @@ function RunEventsView({ runId }: { runId: string }) {
     );
   }
   return (
-    <div style={{ padding: "8px 28px 14px", background: "rgba(0,0,0,0.2)" }}>
+    <div style={{ padding: "8px 28px 14px", background: "var(--highlight)" }}>
       {messages.map((m) => (
         <MessageView key={m.id} message={m} />
       ))}
@@ -1183,7 +1196,7 @@ function ShortcutsCheatsheet({ onClose }: { onClose: () => void }) {
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0,0,0,0.6)",
+        background: "var(--backdrop)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -1193,8 +1206,8 @@ function ShortcutsCheatsheet({ onClose }: { onClose: () => void }) {
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: "#141414",
-          border: "1px solid #2a2a2a",
+          background: "var(--modalBg)",
+          border: "1px solid var(--borderStrong)",
           borderRadius: 6,
           padding: 18,
           width: 380,
@@ -1212,7 +1225,7 @@ function ShortcutsCheatsheet({ onClose }: { onClose: () => void }) {
           >
             <code
               style={{
-                color: "#7ec8e8",
+                color: "var(--info)",
                 fontFamily: "JetBrains Mono, Menlo, Consolas, monospace",
               }}
             >
@@ -1228,6 +1241,229 @@ function ShortcutsCheatsheet({ onClose }: { onClose: () => void }) {
     </div>
   );
 }
+
+// xh5.1 / kobramaz-46i: Settings dialog. One section per persistable
+// preference. Token controls go through window.claudeos.token (preload),
+// other prefs go through localStorage helpers above.
+function SettingsDialog({
+  theme,
+  onThemeChange,
+  onClose,
+}: {
+  theme: Theme;
+  onThemeChange: (t: Theme) => void;
+  onClose: () => void;
+}) {
+  const [defaultDir, setDefaultDir] = useState(
+    () => readPref(PREF_DEFAULT_WORKSPACE_DIR) ?? "",
+  );
+  const [tokenStatus, setTokenStatus] = useState<{
+    present: boolean;
+    encrypted: boolean;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const refreshStatus = useCallback(async () => {
+    if (!window.claudeos) return;
+    try {
+      const status = await window.claudeos.token.status();
+      setTokenStatus(status);
+    } catch (e) {
+      setNotice(`Could not read token status: ${String(e)}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshStatus();
+  }, [refreshStatus]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const handleSave = () => {
+    writePref(PREF_DEFAULT_WORKSPACE_DIR, defaultDir.trim());
+    onClose();
+  };
+
+  const handleForgetToken = async () => {
+    if (!window.claudeos) return;
+    if (!window.confirm("Forget the saved API token? You'll need to re-run setup before sending any new messages.")) return;
+    setBusy(true);
+    try {
+      await window.claudeos.token.clear();
+      setNotice("Token cleared. Restart ClaudeOS or click 'Re-run setup' to provide a new one.");
+      await refreshStatus();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRestartSetup = async () => {
+    if (!window.claudeos) return;
+    setBusy(true);
+    try {
+      await window.claudeos.token.restartSetup();
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "var(--backdrop)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--modalBg)",
+          border: "1px solid var(--borderStrong)",
+          borderRadius: 6,
+          padding: 18,
+          width: 480,
+          fontSize: 12,
+          lineHeight: 1.5,
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 14 }}>
+          Settings
+        </div>
+
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+            API token
+          </div>
+          {tokenStatus === null ? (
+            <div style={{ opacity: 0.5 }}>
+              {window.claudeos
+                ? "Reading status…"
+                : "Token controls are unavailable in this build (no main-window preload)."}
+            </div>
+          ) : (
+            <div style={{ marginBottom: 8 }}>
+              <span style={{ color: tokenStatus.present ? "var(--accent)" : "var(--errorMuted)" }}>
+                {tokenStatus.present ? "Stored" : "Not set"}
+              </span>
+              <span style={{ marginLeft: 10, opacity: 0.5, fontSize: 11 }}>
+                {tokenStatus.encrypted
+                  ? "encrypted via OS keychain"
+                  : "plaintext fallback (no OS keychain)"}
+              </span>
+            </div>
+          )}
+          {window.claudeos && (
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button
+                onClick={() => void handleRestartSetup()}
+                disabled={busy}
+                style={{ ...settingsBtn, background: "var(--infoBg)", borderColor: "var(--infoBorder)" }}
+              >
+                Re-run setup
+              </button>
+              <button
+                onClick={() => void handleForgetToken()}
+                disabled={busy || !tokenStatus?.present}
+                style={{ ...settingsBtn, color: "var(--errorMuted)", borderColor: "var(--errorBorder)" }}
+              >
+                Forget token
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+            Theme
+          </div>
+          <div style={{ display: "flex", gap: 14 }}>
+            {(["dark", "light"] as Theme[]).map((t) => (
+              <label
+                key={t}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="radio"
+                  name="theme"
+                  value={t}
+                  checked={theme === t}
+                  onChange={() => onThemeChange(t)}
+                />
+                <span style={{ textTransform: "capitalize" }}>{t}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+            Default workspace directory
+          </div>
+          <div style={{ opacity: 0.5, fontSize: 11, marginBottom: 6 }}>
+            Pre-fills the directory field when creating a new workspace.
+          </div>
+          <input
+            type="text"
+            value={defaultDir}
+            onChange={(e) => setDefaultDir(e.target.value)}
+            placeholder="/home/me/projects"
+            style={{
+              width: "100%",
+              padding: 6,
+              background: "var(--raised)",
+              color: "var(--text)",
+              border: "1px solid var(--borderStrong)",
+              borderRadius: 4,
+              fontSize: 12,
+            }}
+          />
+        </div>
+
+        {notice && (
+          <div style={{ opacity: 0.7, fontSize: 11, marginBottom: 12 }}>{notice}</div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onClose} style={settingsBtn}>
+            Cancel
+          </button>
+          <button onClick={handleSave} style={{ ...settingsBtn, background: "var(--raisedAlt)" }}>
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const settingsBtn: React.CSSProperties = {
+  background: "transparent",
+  color: "var(--text)",
+  border: "1px solid var(--borderStrong)",
+  borderRadius: 4,
+  padding: "6px 12px",
+  fontSize: 12,
+  cursor: "pointer",
+};
 
 function formatTimestamp(iso: string): string {
   const d = new Date(iso);
@@ -1250,13 +1486,13 @@ function TurnStatsBar({ stats }: { stats: NonNullable<WorkspaceState["lastTurnSt
   return (
     <div
       style={{
-        borderTop: "1px solid #1e1e1e",
+        borderTop: "1px solid var(--border)",
         padding: "4px 16px",
         fontSize: 10,
-        color: "#777",
+        color: "var(--mute)",
         fontFamily: "JetBrains Mono, Menlo, Consolas, monospace",
         letterSpacing: 0.2,
-        background: "#0a0a0a",
+        background: "var(--bg)",
       }}
       title="Last completed turn"
     >
@@ -1288,8 +1524,8 @@ function PermissionPromptModal({ permission, onAllow, onDeny }: PermissionPrompt
   return (
     <div
       style={{
-        borderTop: "1px solid #5a4810",
-        background: "#1a1605",
+        borderTop: "1px solid var(--warnBorder)",
+        background: "var(--warnBg)",
         padding: "12px 16px",
       }}
     >
@@ -1298,19 +1534,19 @@ function PermissionPromptModal({ permission, onAllow, onDeny }: PermissionPrompt
           fontSize: 11,
           letterSpacing: 0.4,
           textTransform: "uppercase",
-          color: "#e0c167",
+          color: "var(--warn)",
           marginBottom: 6,
         }}
       >
         Claude wants to use a tool
       </div>
       <div style={{ fontSize: 13, marginBottom: 8 }}>
-        <strong style={{ color: "#e0c167" }}>{permission.toolName}</strong>
+        <strong style={{ color: "var(--warn)" }}>{permission.toolName}</strong>
       </div>
       <pre
         style={{
-          background: "#0e0e0e",
-          border: "1px solid #2a2a2a",
+          background: "var(--panel)",
+          border: "1px solid var(--borderStrong)",
           borderRadius: 4,
           padding: "8px 10px",
           margin: 0,
@@ -1325,7 +1561,7 @@ function PermissionPromptModal({ permission, onAllow, onDeny }: PermissionPrompt
         {inputJson}
       </pre>
       {permission.reason && (
-        <div style={{ marginTop: 6, fontSize: 11, color: "#b0b0b0" }}>
+        <div style={{ marginTop: 6, fontSize: 11, color: "var(--mute)" }}>
           {permission.reason}
         </div>
       )}
@@ -1335,9 +1571,9 @@ function PermissionPromptModal({ permission, onAllow, onDeny }: PermissionPrompt
           style={{
             ...btn,
             padding: "6px 14px",
-            background: "#1a3a2a",
-            borderColor: "#2d6444",
-            color: "#5fdcb6",
+            background: "var(--accentBg)",
+            borderColor: "var(--accentSolid)",
+            color: "var(--accent)",
           }}
         >
           Allow
@@ -1347,9 +1583,9 @@ function PermissionPromptModal({ permission, onAllow, onDeny }: PermissionPrompt
           style={{
             ...btn,
             padding: "6px 14px",
-            background: "#3a1010",
-            borderColor: "#5a2a2a",
-            color: "#ff8c8c",
+            background: "var(--errorBg)",
+            borderColor: "var(--errorBorder)",
+            color: "var(--errorMuted)",
           }}
         >
           Deny
@@ -1368,12 +1604,12 @@ function AttachmentStrip({ attachments, onRemove }: AttachmentStripProps) {
   return (
     <div
       style={{
-        borderTop: "1px solid #1e1e1e",
+        borderTop: "1px solid var(--border)",
         padding: "8px 12px",
         display: "flex",
         flexWrap: "wrap",
         gap: 8,
-        background: "#0a0a0a",
+        background: "var(--bg)",
       }}
     >
       {attachments.map((a) => (
@@ -1403,8 +1639,8 @@ function AttachmentChip({
         alignItems: "center",
         gap: 6,
         padding: "4px 6px 4px 8px",
-        background: "#161616",
-        border: "1px solid #2a2a2a",
+        background: "var(--raised)",
+        border: "1px solid var(--borderStrong)",
         borderRadius: 4,
         fontSize: 11,
         maxWidth: 200,
@@ -1433,7 +1669,7 @@ function AttachmentChip({
 
 function MessageView({ message }: { message: Message }) {
   const color =
-    message.role === "user" ? "#9bc1ff" : message.role === "tool" ? "#c9a657" : "#e5e5e5";
+    message.role === "user" ? "var(--info)" : message.role === "tool" ? "var(--warn)" : "var(--text)";
   return (
     <div style={{ marginBottom: 14 }}>
       <div
@@ -1495,8 +1731,8 @@ function ToolMessageBody({ message }: { message: Message }) {
         ? bodyData
         : JSON.stringify(bodyData, null, 2);
 
-  const borderColor = isError ? "#5a2020" : isCall ? "#1e3a4a" : "#1a3a2a";
-  const accentColor = isError ? "#ff8c8c" : isCall ? "#7ec8e8" : "#5fdcb6";
+  const borderColor = isError ? "var(--errorBorderDark)" : isCall ? "var(--infoBg)" : "var(--accentBg)";
+  const accentColor = isError ? "var(--errorMuted)" : isCall ? "var(--info)" : "var(--accent)";
   const arrow = isCall ? "→" : "←";
 
   return (
@@ -1518,7 +1754,7 @@ function ToolMessageBody({ message }: { message: Message }) {
           padding: "5px 9px",
           cursor: bodyJson ? "pointer" : "default",
           userSelect: "none",
-          background: "rgba(255,255,255,0.03)",
+          background: "var(--highlight)",
         }}
       >
         <span style={{ color: accentColor, fontFamily: "monospace" }}>{arrow}</span>
@@ -1528,8 +1764,8 @@ function ToolMessageBody({ message }: { message: Message }) {
         {isError && (
           <span
             style={{
-              background: "#5a2020",
-              color: "#ff8c8c",
+              background: "var(--errorBorderDark)",
+              color: "var(--errorMuted)",
               fontSize: 10,
               padding: "1px 5px",
               borderRadius: 3,
@@ -1597,7 +1833,7 @@ function PromptDialog({
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0, 0, 0, 0.5)",
+        background: "var(--backdrop)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -1607,8 +1843,8 @@ function PromptDialog({
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: "#0e0e0e",
-          border: "1px solid #2a2a2a",
+          background: "var(--panel)",
+          border: "1px solid var(--borderStrong)",
           borderRadius: 6,
           padding: 20,
           width: 440,
@@ -1642,9 +1878,9 @@ function PromptDialog({
               placeholder={field.placeholder}
               style={{
                 width: "100%",
-                background: "#161616",
-                color: "#e5e5e5",
-                border: "1px solid #2a2a2a",
+                background: "var(--raised)",
+                color: "var(--text)",
+                border: "1px solid var(--borderStrong)",
                 borderRadius: 4,
                 padding: "8px 10px",
                 fontSize: 13,
@@ -1663,9 +1899,9 @@ function PromptDialog({
             style={{
               ...btn,
               padding: "6px 14px",
-              background: "#1a3a2a",
-              borderColor: "#2d6444",
-              color: "#5fdcb6",
+              background: "var(--accentBg)",
+              borderColor: "var(--accentSolid)",
+              color: "var(--accent)",
             }}
           >
             {prompt.submitLabel}
@@ -1696,9 +1932,9 @@ function Empty({ hasWorkspaces }: { hasWorkspaces: boolean }) {
 }
 
 const btn: React.CSSProperties = {
-  background: "#1f1f1f",
-  color: "#e5e5e5",
-  border: "1px solid #2a2a2a",
+  background: "var(--raisedAlt)",
+  color: "var(--text)",
+  border: "1px solid var(--borderStrong)",
   borderRadius: 4,
   padding: "4px 10px",
   fontSize: 12,
@@ -1707,7 +1943,7 @@ const btn: React.CSSProperties = {
 
 const miniBtn: React.CSSProperties = {
   background: "transparent",
-  color: "#e5e5e5",
+  color: "var(--text)",
   border: "none",
   padding: "0 4px",
   fontSize: 14,

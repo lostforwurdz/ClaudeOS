@@ -123,6 +123,56 @@ test("keyboard shortcuts: Ctrl+/ opens cheat sheet, Ctrl+Shift+N opens create di
     .waitFor({ state: "visible", timeout: 5_000 });
 });
 
+test("settings panel: theme toggle flips data-theme + persists pref (kobramaz-c5y)", async () => {
+  const { application, page } = await launchApp();
+  app = application;
+
+  // Default theme on first launch is dark.
+  const initial = await page.evaluate(
+    () => document.documentElement.dataset.theme,
+  );
+  assert.equal(initial, "dark");
+
+  await page.locator('button[title="Settings"]').waitFor({ state: "visible", timeout: 30_000 });
+  await page.click('button[title="Settings"]');
+  // Click the light radio — change handler updates state + writes pref.
+  await page.locator('input[type="radio"][value="light"]').check();
+
+  // data-theme on document root flips immediately.
+  const after = await page.evaluate(() => document.documentElement.dataset.theme);
+  assert.equal(after, "light");
+
+  // localStorage has the pref so the next launch restores it.
+  const stored = await page.evaluate(() =>
+    window.localStorage.getItem("claudeos.pref.theme"),
+  );
+  assert.equal(stored, "light");
+});
+
+test("settings panel: token surface exposes status + control buttons (kobramaz-46i)", async () => {
+  const { application, page } = await launchApp();
+  app = application;
+
+  await page.locator('button[title="Settings"]').waitFor({ state: "visible", timeout: 30_000 });
+  await page.click('button[title="Settings"]');
+
+  // The token status row resolves once the preload IPC returns.
+  const statusLine = page.locator("text=/Stored|Not set/").first();
+  await statusLine.waitFor({ state: "visible", timeout: 10_000 });
+  // Both control buttons should render (the bridge exists in the packaged build).
+  await page.locator('button:has-text("Re-run setup")').waitFor({
+    state: "visible",
+    timeout: 5_000,
+  });
+  await page.locator('button:has-text("Forget token")').waitFor({
+    state: "visible",
+    timeout: 5_000,
+  });
+  // window.claudeos must be wired by the preload.
+  const hasBridge = await page.evaluate(() => typeof window.claudeos === "object");
+  assert.equal(hasBridge, true);
+});
+
 test("settings panel: persists default workspace dir and pre-fills create dialog (xh5.1)", async () => {
   const { application, page } = await launchApp();
   app = application;

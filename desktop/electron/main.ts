@@ -28,6 +28,10 @@ const SETUP_TOKEN_START_CHANNEL = "claudeos:setup-token:start";
 const SETUP_TOKEN_WRITE_CHANNEL = "claudeos:setup-token:write";
 const SETUP_TOKEN_DATA_CHANNEL = "claudeos:setup-token:data";
 const SETUP_TOKEN_EXIT_CHANNEL = "claudeos:setup-token:exit";
+// kobramaz-46i: main-window-only channels for the Settings panel.
+const TOKEN_STATUS_CHANNEL = "claudeos:token:status";
+const TOKEN_CLEAR_CHANNEL = "claudeos:token:clear";
+const TOKEN_RESTART_SETUP_CHANNEL = "claudeos:token:restart-setup";
 
 const API_HOST = "127.0.0.1";
 const API_PORT = Number(process.env.CLAUDEOS_PORT ?? 7878);
@@ -184,6 +188,7 @@ function createMainWindow(): BrowserWindow {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: resolveMainPreloadPath(),
     },
   });
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -245,6 +250,19 @@ function resolveSetupPreloadPath(): string {
   return candidates[0];
 }
 
+function resolveMainPreloadPath(): string {
+  const candidates = app.isPackaged
+    ? [join(__dirname, "preload-main.js")]
+    : [
+        join(__dirname, "preload-main.js"),
+        resolve(__dirname, "..", "out", "electron", "preload-main.js"),
+      ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
 function createSetupWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 720,
@@ -297,6 +315,18 @@ void app.whenReady().then(async () => {
     if (!result.ok) {
       mainWindow = createPreflightWindow(result);
       return;
+    }
+    // kobramaz-46i: startMain is re-runnable from the Settings re-key flow.
+    // Tear down a prior api-server child + main window before respawning so
+    // the new token actually takes effect (port is freed; the renderer
+    // reloads against the fresh server).
+    if (apiServer) {
+      apiServer.kill();
+      apiServer = null;
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.close();
+      mainWindow = null;
     }
     // Make sure the api-server child sees the token even when it wasn't in
     // the original env (e.g. token came from safeStorage).
@@ -390,6 +420,27 @@ void app.whenReady().then(async () => {
     if (typeof raw === "string" && setupTokenRunner) {
       setupTokenRunner.write(raw);
     }
+  });
+
+  // kobramaz-46i: Settings-panel handlers. The renderer reads token presence
+  // (without ever seeing the value), can drop it, and can pop the setup
+  // window for a re-keying flow.
+  ipcMain.handle(TOKEN_STATUS_CHANNEL, () => ({
+    present: (authStore.loadToken() ?? "").trim().length > 0,
+    encrypted: safeStorage.isEncryptionAvailable(),
+  }));
+
+  ipcMain.handle(TOKEN_CLEAR_CHANNEL, () => {
+    authStore.clearToken();
+  });
+
+  ipcMain.handle(TOKEN_RESTART_SETUP_CHANNEL, () => {
+    // Open the first-run setup window. When the user completes the flow,
+    // the existing SAVE_TOKEN_CHANNEL handler calls startMain again, which
+    // is now re-runnable — it kills the old api-server + main window and
+    // spawns fresh against the new token. Cancelling the setup window is
+    // a no-op for the running app.
+    createSetupWindow();
   });
 
   if (startupToken && startupToken.trim().length > 0) {
