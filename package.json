@@ -10,6 +10,7 @@
     "desktop:dev": "npm --prefix desktop run dev",
     "desktop:test": "npm --prefix desktop run test",
     "desktop:typecheck": "npm --prefix desktop run typecheck",
+    "desktop:rebuild-natives": "npm --prefix desktop run rebuild-natives",
     "harness:install": "npm install --prefix runtime/harness",
     "harness:build": "npm --prefix runtime/harness run build",
     "harness:test": "npm --prefix runtime/harness run test",

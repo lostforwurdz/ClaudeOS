@@ -14,6 +14,7 @@
     "build:electron": "tsup electron/main.ts electron/preflight.ts electron/bundled-claude.ts electron/auth-store.ts electron/auto-updater.ts electron/preload-setup.ts electron/setup-token-runner.ts --format cjs --out-dir out/electron --external electron --external electron-updater --external @lydell/node-pty --minify",
     "build": "npm run build:renderer && npm run build:electron",
     "prepack:runtime": "npm --prefix ../runtime/api-server run build && npm --prefix ../packages/browser-mcp run build && npm --prefix ../packages/claude-cli run install:bundle",
+    "rebuild-natives": "electron-rebuild -m ../runtime/api-server -w better-sqlite3",
     "pack": "npm run build && npm run prepack:runtime && electron-builder --linux --config electron-builder.yml",
     "test": "node --import tsx --test src/**/*.test.ts electron/**/*.test.ts",
     "typecheck": "tsc --noEmit"
@@ -30,6 +31,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
     "@types/node": "^24.3.0",
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.9",
