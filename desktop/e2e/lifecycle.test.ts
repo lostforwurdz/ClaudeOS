@@ -95,6 +95,120 @@ test("smoke: app boots, api-server health endpoint responds", async () => {
   assert.equal(status, 200);
 });
 
+test("keyboard shortcuts: Ctrl+/ opens cheat sheet, Ctrl+Shift+N opens create dialog (xh5.4)", async () => {
+  const { application, page } = await launchApp();
+  app = application;
+
+  await page
+    .locator('button[title="Create new workspace (Ctrl+Shift+N)"]')
+    .waitFor({ state: "visible", timeout: 30_000 });
+
+  // Ctrl+/ opens the cheat sheet — we look for its heading.
+  await page.keyboard.press("Control+/");
+  await page.getByText("Keyboard shortcuts", { exact: true }).waitFor({
+    state: "visible",
+    timeout: 5_000,
+  });
+  // Pressing Escape closes it.
+  await page.keyboard.press("Escape");
+  await page.getByText("Keyboard shortcuts", { exact: true }).waitFor({
+    state: "hidden",
+    timeout: 5_000,
+  });
+
+  // Ctrl+Shift+N opens the create-workspace dialog (a PromptDialog).
+  await page.keyboard.press("Control+Shift+N");
+  await page
+    .locator('input[placeholder="my-project"]')
+    .waitFor({ state: "visible", timeout: 5_000 });
+});
+
+test("settings panel: persists default workspace dir and pre-fills create dialog (xh5.1)", async () => {
+  const { application, page } = await launchApp();
+  app = application;
+
+  // Open settings via the gear button next to "+".
+  await page.locator('button[title="Settings"]').waitFor({ state: "visible", timeout: 30_000 });
+  await page.click('button[title="Settings"]');
+
+  // Settings modal reuses PromptDialog — fill the default-workspace-dir field.
+  const defaultDir = "/tmp/e2e-pref-default-dir";
+  const dirInput = page.locator(
+    'input[placeholder="/home/me/projects"]',
+  );
+  await dirInput.waitFor({ state: "visible", timeout: 10_000 });
+  await dirInput.fill(defaultDir);
+  await page.click('button:has-text("Save")');
+
+  // Wait for the modal to close.
+  await dirInput.waitFor({ state: "hidden", timeout: 5_000 });
+
+  // localStorage must hold the new pref.
+  const stored = await page.evaluate(() =>
+    window.localStorage.getItem("claudeos.pref.defaultWorkspaceDir"),
+  );
+  assert.equal(stored, defaultDir);
+
+  // Create-workspace dialog now pre-fills the dir field with the default.
+  await page.click('button[title^="Create new workspace"]');
+  const dirField = page.locator('input[placeholder="/home/me/projects/my-project"]');
+  await dirField.waitFor({ state: "visible", timeout: 5_000 });
+  assert.equal(await dirField.inputValue(), defaultDir);
+});
+
+test("history toggle: opens HistoryPanel and shows empty state for a new workspace (xh5.2)", async () => {
+  const { application, page } = await launchApp();
+  app = application;
+
+  const newButton = page.locator('button[title^="Create new workspace"]');
+  await newButton.waitFor({ state: "visible", timeout: 30_000 });
+  await newButton.click();
+  await page.fill('input[placeholder="my-project"]', "history-toggle-ws");
+  await page.fill('input[placeholder="/home/me/projects/my-project"]', workspaceDir);
+  // Pre-register the response wait so we don't race the click → fetch.
+  const createWait = page.waitForResponse(
+    (res) => res.url().endsWith("/workspaces") && res.request().method() === "POST",
+    { timeout: 10_000 },
+  );
+  await page.click('button:has-text("Create")');
+  await createWait;
+
+  // Click the "History" toggle in the workspace header.
+  await page.click('button[title="Browse past sessions"]');
+
+  // The api-server reports the new workspace's session list. The session
+  // created on workspace-open is in-flight (no runs yet), so the panel
+  // either shows the in-flight session or the empty state — accept either.
+  const panel = await page.waitForFunction(
+    () => {
+      const body = document.body.innerText;
+      return body.includes("past session") || body.includes("No past sessions");
+    },
+    null,
+    { timeout: 10_000 },
+  );
+  assert.ok(panel, "history panel did not render");
+
+  // Toggle back to chat — the History button label flips.
+  await page.click('button[title="Back to chat"]');
+  await page.locator('textarea[placeholder*="Message Claude"]').waitFor({
+    state: "visible",
+    timeout: 10_000,
+  });
+
+  // Cleanup so the next test gets a clean slate.
+  await page.evaluate(() => {
+    window.confirm = () => true;
+  });
+  await page.getByText("history-toggle-ws", { exact: true }).first().hover();
+  const deleteWait = page.waitForResponse(
+    (res) => res.url().includes("/workspaces/") && res.request().method() === "DELETE",
+    { timeout: 10_000 },
+  );
+  await page.locator('button[title^="Delete workspace"]').first().click();
+  await deleteWait;
+});
+
 test("workspace lifecycle: create via UI, then delete via UI", async () => {
   const { application, page } = await launchApp();
   app = application;
@@ -107,7 +221,7 @@ test("workspace lifecycle: create via UI, then delete via UI", async () => {
   // Open the create-workspace modal (the "+" button in the sidebar header).
   // Wait for the button to be visible — by the time it's actionable, the
   // boot-time GET /workspaces has already settled.
-  const newButton = page.locator('button[title="Create new workspace"]');
+  const newButton = page.locator('button[title^="Create new workspace"]');
   try {
     await newButton.waitFor({ state: "visible", timeout: 30_000 });
   } catch (err) {
@@ -125,13 +239,13 @@ test("workspace lifecycle: create via UI, then delete via UI", async () => {
     'input[placeholder="/home/me/projects/my-project"]',
     workspaceDir,
   );
-  await page.click('button:has-text("Create")');
-
-  // Wait for POST /workspaces and assert success.
-  const createRes = await page.waitForResponse(
+  // Pre-register the response wait so we don't race the click → fetch.
+  const createWait = page.waitForResponse(
     (res) => res.url().endsWith("/workspaces") && res.request().method() === "POST",
     { timeout: 10_000 },
   );
+  await page.click('button:has-text("Create")');
+  const createRes = await createWait;
   assert.equal(createRes.status(), 200);
 
   // The new workspace tab/name should appear in the DOM.
@@ -153,6 +267,10 @@ test("workspace lifecycle: create via UI, then delete via UI", async () => {
   // WorkspaceRow). Hover the row by its name first, then click.
   await page.getByText("e2e-test-ws", { exact: true }).first().hover();
   const trash = page.locator('button[title^="Delete workspace"]').first();
+  const delWait = page.waitForResponse(
+    (res) => res.url().includes("/workspaces/") && res.request().method() === "DELETE",
+    { timeout: 10_000 },
+  );
   try {
     await trash.click({ timeout: 30_000 });
   } catch (err) {
@@ -161,11 +279,7 @@ test("workspace lifecycle: create via UI, then delete via UI", async () => {
       `delete button not found.\nhtml (first 3000 chars): ${html.slice(0, 3000)}\nconsole tail:\n${consoleEvents.slice(-15).join("\n")}\nunderlying: ${(err as Error).message}`,
     );
   }
-
-  const delRes = await page.waitForResponse(
-    (res) => res.url().includes("/workspaces/") && res.request().method() === "DELETE",
-    { timeout: 10_000 },
-  );
+  const delRes = await delWait;
   // 200 from the api-server. 0 would indicate the request was blocked by
   // CORS — the regression check for @fastify/cors v11 default methods.
   assert.equal(delRes.status(), 200, `DELETE returned ${delRes.status()}`);

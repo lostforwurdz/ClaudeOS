@@ -5,10 +5,17 @@ import remarkGfm from "remark-gfm";
 
 import "highlight.js/styles/atom-one-dark.css";
 
-import type { Attachment, Workspace } from "@claudeos/runtime-client/contracts";
+import type {
+  Attachment,
+  RunEvent,
+  RunSummary,
+  Session,
+  Workspace,
+} from "@claudeos/runtime-client/contracts";
 
 import { api } from "./api.js";
 import {
+  applyEvent,
   appReducer,
   initialAppState,
   type Message,
@@ -16,6 +23,28 @@ import {
 } from "./state.js";
 
 type CloseFn = () => void;
+
+// xh5.1: small typed wrapper around localStorage so settings keys live in one
+// place. Persisted across launches; per-machine, not per-user (single-user OS).
+const PREF_DEFAULT_WORKSPACE_DIR = "claudeos.pref.defaultWorkspaceDir";
+
+function readPref(key: string): string | null {
+  try {
+    return typeof window !== "undefined" ? window.localStorage.getItem(key) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePref(key: string, value: string): void {
+  try {
+    if (typeof window === "undefined") return;
+    if (value.length === 0) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, value);
+  } catch {
+    // ignore — private mode, quota, etc.
+  }
+}
 
 export function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -71,12 +100,18 @@ export function App() {
   const [activePrompt, setActivePrompt] = useState<ActivePrompt | null>(null);
 
   const handleCreateWorkspace = useCallback(() => {
+    const defaultDir = readPref(PREF_DEFAULT_WORKSPACE_DIR) ?? "";
     setActivePrompt({
       title: "Create workspace",
       submitLabel: "Create",
       fields: [
         { name: "name", label: "Name", placeholder: "my-project" },
-        { name: "dir", label: "Directory (absolute path)", placeholder: "/home/me/projects/my-project" },
+        {
+          name: "dir",
+          label: "Directory (absolute path)",
+          placeholder: "/home/me/projects/my-project",
+          defaultValue: defaultDir,
+        },
       ],
       onSubmit: async (values) => {
         setActivePrompt(null);
@@ -200,6 +235,25 @@ export function App() {
     [],
   );
 
+  const handleOpenSettings = useCallback(() => {
+    setActivePrompt({
+      title: "Settings",
+      submitLabel: "Save",
+      fields: [
+        {
+          name: "defaultWorkspaceDir",
+          label: "Default workspace directory (pre-fills the create-workspace dialog)",
+          placeholder: "/home/me/projects",
+          defaultValue: readPref(PREF_DEFAULT_WORKSPACE_DIR) ?? "",
+        },
+      ],
+      onSubmit: (values) => {
+        setActivePrompt(null);
+        writePref(PREF_DEFAULT_WORKSPACE_DIR, (values.defaultWorkspaceDir ?? "").trim());
+      },
+    });
+  }, []);
+
   const handleDeleteWorkspace = useCallback(
     async (workspaceId: string, name: string) => {
       const ok = window.confirm(
@@ -263,6 +317,76 @@ export function App() {
   );
 
   const activeSlot = state.activeId ? state.byId[state.activeId] : null;
+
+  // xh5.4: global keyboard shortcuts. Registered on window so they fire from
+  // anywhere except inside the active prompt modal (which captures Enter
+  // for its own submit). Skips matching when the user is typing into an
+  // input/textarea other than the chat composer (e.g. the modal fields).
+  const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      // Don't intercept while the prompt/settings modal is open — let it own
+      // its own keyboard handling.
+      if (activePrompt) return;
+      const mod = event.metaKey || event.ctrlKey;
+      const target = event.target as HTMLElement | null;
+      const isComposer =
+        target?.tagName === "TEXTAREA" &&
+        target.getAttribute("data-claudeos-composer") === "true";
+      const isInput = target instanceof HTMLInputElement;
+
+      // Cmd/Ctrl+Shift+N — new workspace (always)
+      if (mod && event.shiftKey && (event.key === "N" || event.key === "n")) {
+        event.preventDefault();
+        handleCreateWorkspace();
+        return;
+      }
+      // Cmd/Ctrl+L — focus the chat composer (always)
+      if (mod && !event.shiftKey && (event.key === "L" || event.key === "l")) {
+        const composer = document.querySelector<HTMLTextAreaElement>(
+          'textarea[data-claudeos-composer="true"]',
+        );
+        if (composer) {
+          event.preventDefault();
+          composer.focus();
+        }
+        return;
+      }
+      // Cmd/Ctrl+/ — toggle the shortcuts cheat sheet (always)
+      if (mod && event.key === "/") {
+        event.preventDefault();
+        setShowShortcutsHelp((s) => !s);
+        return;
+      }
+      // Cmd/Ctrl+1..9 — activate the Nth open workspace tab (always)
+      if (mod && /^[1-9]$/.test(event.key)) {
+        const idx = Number(event.key) - 1;
+        const targetId = state.openOrder[idx];
+        if (targetId) {
+          event.preventDefault();
+          activateWorkspace(targetId);
+        }
+        return;
+      }
+      // Escape — cancel active run, but only when the user isn't editing
+      // text (escape inside an input usually means "blur this field").
+      if (event.key === "Escape" && !isComposer && !isInput) {
+        if (activeSlot && activeSlot.streaming) {
+          event.preventDefault();
+          void handleCancel(activeSlot.workspace.id);
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [
+    activePrompt,
+    activeSlot,
+    activateWorkspace,
+    handleCancel,
+    handleCreateWorkspace,
+    state.openOrder,
+  ]);
   const openWorkspaces = state.openOrder.map((id) => state.byId[id]);
 
   return (
@@ -279,12 +403,16 @@ export function App() {
         onNew={handleCreateWorkspace}
         onRename={(ws) => void handleRenameWorkspace(ws.id, ws.name)}
         onDelete={(ws) => void handleDeleteWorkspace(ws.id, ws.name)}
+        onOpenSettings={handleOpenSettings}
       />
       {activePrompt && (
         <PromptDialog
           prompt={activePrompt}
           onCancel={() => setActivePrompt(null)}
         />
+      )}
+      {showShortcutsHelp && (
+        <ShortcutsCheatsheet onClose={() => setShowShortcutsHelp(false)} />
       )}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         {globalError && (
@@ -303,6 +431,9 @@ export function App() {
             onCancel={() => void handleCancel(activeSlot.workspace.id)}
             onPermissionDecision={(decision) =>
               void handlePermissionDecision(activeSlot.workspace.id, decision)
+            }
+            onToggleHistory={() =>
+              dispatch({ type: "HISTORY_TOGGLED", workspaceId: activeSlot.workspace.id })
             }
           />
         ) : (
@@ -326,6 +457,7 @@ interface SidebarProps {
   onNew: () => void;
   onRename: (ws: Workspace) => void;
   onDelete: (ws: Workspace) => void;
+  onOpenSettings: () => void;
 }
 
 function Sidebar({
@@ -337,6 +469,7 @@ function Sidebar({
   onNew,
   onRename,
   onDelete,
+  onOpenSettings,
 }: SidebarProps) {
   const openIds = new Set(open.map((s) => s.workspace.id));
   return (
@@ -360,7 +493,10 @@ function Sidebar({
         }}
       >
         <strong style={{ fontSize: 13, letterSpacing: -0.2 }}>ClaudeOS</strong>
-        <button onClick={onNew} style={btn} title="Create new workspace">+</button>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button onClick={onOpenSettings} style={btn} title="Settings">⚙</button>
+          <button onClick={onNew} style={btn} title="Create new workspace (Ctrl+Shift+N)">+</button>
+        </div>
       </div>
 
       {open.length > 0 && (
@@ -534,6 +670,7 @@ interface ChatViewProps {
   onRemoveAttachment: (workspacePath: string) => void;
   onCancel: () => void;
   onPermissionDecision: (decision: "allow" | "deny") => void;
+  onToggleHistory: () => void;
 }
 
 function ChatView({
@@ -543,6 +680,7 @@ function ChatView({
   onRemoveAttachment,
   onCancel,
   onPermissionDecision,
+  onToggleHistory,
 }: ChatViewProps) {
   const [input, setInput] = useState("");
   const [dragActive, setDragActive] = useState(false);
@@ -599,15 +737,36 @@ function ChatView({
       >
         <strong style={{ fontSize: 13 }}>{slot.workspace.name}</strong>
         <span style={{ opacity: 0.4 }}>{slot.workspace.dir}</span>
-        {slot.session && (
-          <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: 11 }}>
-            session: {slot.session.id.slice(0, 8)}…
-            {slot.session.claude_session_id &&
-              ` ↔ ${slot.session.claude_session_id.slice(0, 8)}…`}
-          </span>
-        )}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+          {slot.session && !slot.historyMode && (
+            <span style={{ opacity: 0.5, fontSize: 11 }}>
+              session: {slot.session.id.slice(0, 8)}…
+              {slot.session.claude_session_id &&
+                ` ↔ ${slot.session.claude_session_id.slice(0, 8)}…`}
+            </span>
+          )}
+          <button
+            onClick={onToggleHistory}
+            title={slot.historyMode ? "Back to chat" : "Browse past sessions"}
+            style={{
+              background: slot.historyMode ? "#1f3a4a" : "#1f1f1f",
+              color: "#e5e5e5",
+              border: `1px solid ${slot.historyMode ? "#3a5a6a" : "#2a2a2a"}`,
+              borderRadius: 4,
+              padding: "3px 9px",
+              fontSize: 11,
+              cursor: "pointer",
+            }}
+          >
+            {slot.historyMode ? "← Chat" : "History"}
+          </button>
+        </div>
       </header>
 
+      {slot.historyMode ? (
+        <HistoryPanel workspaceId={slot.workspace.id} />
+      ) : (
+        <>
       <main
         style={{
           flex: 1,
@@ -696,6 +855,7 @@ function ChatView({
         </button>
         <textarea
           value={input}
+          data-claudeos-composer="true"
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -723,7 +883,7 @@ function ChatView({
           <button
             onClick={onCancel}
             style={{ ...btn, padding: "8px 16px", borderColor: "#5a2a2a", color: "#ff8c8c" }}
-            title="Stop the running tool/turn"
+            title="Stop the running tool/turn (Esc)"
           >
             Cancel
           </button>
@@ -740,8 +900,339 @@ function ChatView({
       {slot.lastTurnStats && !slot.streaming && (
         <TurnStatsBar stats={slot.lastTurnStats} />
       )}
+        </>
+      )}
     </>
   );
+}
+
+// ---------------------------------------------------------------------------
+// HistoryPanel (xh5.2): browse past sessions/runs/events for a workspace.
+// Read-only — no resume yet.
+// ---------------------------------------------------------------------------
+
+interface HistoryPanelProps {
+  workspaceId: string;
+}
+
+function HistoryPanel({ workspaceId }: HistoryPanelProps) {
+  const [sessions, setSessions] = useState<Session[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const page = await api.listSessions(workspaceId, { limit: 50 });
+        if (!cancelled) setSessions(page.items);
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId]);
+
+  if (error) {
+    return (
+      <main style={{ flex: 1, padding: 16, fontSize: 12, color: "#ff8c8c" }}>
+        Failed to load history: {error}
+      </main>
+    );
+  }
+  if (sessions === null) {
+    return (
+      <main style={{ flex: 1, padding: 16, fontSize: 12, opacity: 0.5 }}>
+        Loading history…
+      </main>
+    );
+  }
+  if (sessions.length === 0) {
+    return (
+      <main style={{ flex: 1, padding: 16, fontSize: 12, opacity: 0.5 }}>
+        No past sessions for this workspace yet.
+      </main>
+    );
+  }
+
+  return (
+    <main style={{ flex: 1, overflowY: "auto", padding: 16 }}>
+      <div style={{ fontSize: 11, opacity: 0.5, marginBottom: 8 }}>
+        {sessions.length} past {sessions.length === 1 ? "session" : "sessions"}
+      </div>
+      {sessions.map((s) => (
+        <SessionRow
+          key={s.id}
+          session={s}
+          expanded={expanded === s.id}
+          onToggle={() => setExpanded(expanded === s.id ? null : s.id)}
+        />
+      ))}
+    </main>
+  );
+}
+
+interface SessionRowProps {
+  session: Session;
+  expanded: boolean;
+  onToggle: () => void;
+}
+
+function SessionRow({ session, expanded, onToggle }: SessionRowProps) {
+  return (
+    <div
+      style={{
+        border: "1px solid #1e1e1e",
+        borderRadius: 4,
+        marginBottom: 8,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        onClick={onToggle}
+        style={{
+          padding: "8px 12px",
+          cursor: "pointer",
+          background: expanded ? "rgba(255,255,255,0.04)" : "transparent",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          fontSize: 12,
+        }}
+      >
+        <span style={{ opacity: 0.6, fontFamily: "monospace" }}>
+          {session.id.slice(0, 8)}
+        </span>
+        <span style={{ opacity: 0.7 }}>{formatTimestamp(session.created_at)}</span>
+        {session.claude_session_id && (
+          <span style={{ opacity: 0.4, fontSize: 11, fontFamily: "monospace" }}>
+            ↔ {session.claude_session_id.slice(0, 8)}
+          </span>
+        )}
+        <span style={{ marginLeft: "auto", opacity: 0.4, fontSize: 10 }}>
+          {expanded ? "▲" : "▼"}
+        </span>
+      </div>
+      {expanded && <SessionRuns sessionId={session.id} />}
+    </div>
+  );
+}
+
+function SessionRuns({ sessionId }: { sessionId: string }) {
+  const [runs, setRuns] = useState<RunSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedRun, setExpandedRun] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const page = await api.listRunsForSession(sessionId, { limit: 50 });
+        if (!cancelled) setRuns(page.items);
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  if (error) {
+    return <div style={{ padding: 12, fontSize: 11, color: "#ff8c8c" }}>{error}</div>;
+  }
+  if (runs === null) {
+    return <div style={{ padding: 12, fontSize: 11, opacity: 0.5 }}>Loading runs…</div>;
+  }
+  if (runs.length === 0) {
+    return <div style={{ padding: 12, fontSize: 11, opacity: 0.5 }}>No runs.</div>;
+  }
+  return (
+    <div style={{ borderTop: "1px solid #1e1e1e" }}>
+      {runs.map((r) => (
+        <RunRow
+          key={r.id}
+          run={r}
+          expanded={expandedRun === r.id}
+          onToggle={() => setExpandedRun(expandedRun === r.id ? null : r.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function RunRow({
+  run,
+  expanded,
+  onToggle,
+}: {
+  run: RunSummary;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const statusColor =
+    run.status === "completed"
+      ? "#5fdcb6"
+      : run.status === "failed"
+        ? "#ff8c8c"
+        : run.status === "cancelled"
+          ? "#c8a85f"
+          : "#7ec8e8";
+  return (
+    <div style={{ borderBottom: "1px solid #161616" }}>
+      <div
+        onClick={onToggle}
+        style={{
+          padding: "6px 14px 6px 28px",
+          cursor: "pointer",
+          background: expanded ? "rgba(255,255,255,0.03)" : "transparent",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          fontSize: 11,
+        }}
+      >
+        <span style={{ color: statusColor, fontFamily: "monospace" }}>
+          {run.status}
+        </span>
+        <span style={{ opacity: 0.6 }}>{formatTimestamp(run.started_at)}</span>
+        <span style={{ opacity: 0.4, fontFamily: "monospace" }}>
+          {run.id.slice(0, 8)}
+        </span>
+        <span style={{ marginLeft: "auto", opacity: 0.4, fontSize: 10 }}>
+          {expanded ? "▲" : "▼"}
+        </span>
+      </div>
+      {expanded && <RunEventsView runId={run.id} />}
+    </div>
+  );
+}
+
+function RunEventsView({ runId }: { runId: string }) {
+  const [messages, setMessages] = useState<Message[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const events = await api.listRunEvents(runId);
+        if (cancelled) return;
+        // Replay the persisted events through the same reducer the live chat
+        // uses so deltas merge into a single assistant message and tool
+        // call/result pairs render as the same collapsible blocks.
+        let msgs: Message[] = [];
+        for (const ev of events as RunEvent[]) {
+          msgs = applyEvent(msgs, ev);
+        }
+        setMessages(msgs);
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [runId]);
+
+  if (error) {
+    return <div style={{ padding: 12, fontSize: 11, color: "#ff8c8c" }}>{error}</div>;
+  }
+  if (messages === null) {
+    return <div style={{ padding: 12, fontSize: 11, opacity: 0.5 }}>Loading…</div>;
+  }
+  if (messages.length === 0) {
+    return (
+      <div style={{ padding: 12, fontSize: 11, opacity: 0.5 }}>No events recorded.</div>
+    );
+  }
+  return (
+    <div style={{ padding: "8px 28px 14px", background: "rgba(0,0,0,0.2)" }}>
+      {messages.map((m) => (
+        <MessageView key={m.id} message={m} />
+      ))}
+    </div>
+  );
+}
+
+// xh5.4: shortcuts cheat sheet shown via Cmd/Ctrl+/. Lightweight modal — no
+// portal, no ReactDOM.createPortal, just an absolute-positioned overlay.
+function ShortcutsCheatsheet({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const rows: Array<[string, string]> = [
+    ["Ctrl+Shift+N", "New workspace"],
+    ["Ctrl+L", "Focus the chat composer"],
+    ["Ctrl+1 … Ctrl+9", "Switch to the Nth open workspace"],
+    ["Enter (in composer)", "Send message"],
+    ["Shift+Enter (in composer)", "Newline"],
+    ["Escape", "Cancel the running turn"],
+    ["Ctrl+/", "Toggle this cheat sheet"],
+  ];
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.6)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "#141414",
+          border: "1px solid #2a2a2a",
+          borderRadius: 6,
+          padding: 18,
+          width: 380,
+          fontSize: 12,
+          lineHeight: 1.6,
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+          Keyboard shortcuts
+        </div>
+        {rows.map(([keys, label]) => (
+          <div
+            key={keys}
+            style={{ display: "flex", justifyContent: "space-between", gap: 16 }}
+          >
+            <code
+              style={{
+                color: "#7ec8e8",
+                fontFamily: "JetBrains Mono, Menlo, Consolas, monospace",
+              }}
+            >
+              {keys}
+            </code>
+            <span style={{ opacity: 0.7 }}>{label}</span>
+          </div>
+        ))}
+        <div style={{ marginTop: 14, opacity: 0.4, fontSize: 11 }}>
+          Click outside or press Escape to dismiss.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
 }
 
 function TurnStatsBar({ stats }: { stats: NonNullable<WorkspaceState["lastTurnStats"]> }) {
