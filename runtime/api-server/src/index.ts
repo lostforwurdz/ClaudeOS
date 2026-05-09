@@ -27,6 +27,14 @@ import {
   listTemplates,
 } from "./templates.js";
 import { MAX_UPLOAD_BYTES, saveUpload } from "./uploads.js";
+import {
+  bm25Search,
+  defaultWikiDir,
+  formatExcerpts,
+  loadWikiIndex,
+  type WikiDoc,
+} from "./wiki.js";
+import { WorktreeError, provisionWorktree } from "./worktrees.js";
 
 // ----------------------------------------------------------------------------
 // Validation schemas
@@ -44,6 +52,13 @@ const UpdateWorkspaceSchema = z.object({
 
 const CreateSessionSchema = z.object({
   workspace_id: z.string().min(1),
+  /**
+   * rec-6: when set, the new session is "forked" from this Claude session
+   * id — the first run resumes that conversation via --resume rather than
+   * starting fresh. The historical session itself is unchanged; this is
+   * just a pointer.
+   */
+  fork_from_claude_session_id: z.string().min(1).optional(),
 });
 
 const SubmitRunSchema = z.object({
@@ -120,16 +135,26 @@ function createRepo(db: DatabaseType): Repo {
     },
     createSession(body) {
       const now = new Date().toISOString();
+      // rec-6: optional fork from an existing claude_session_id. When set,
+      // the first run resumes that conversation instead of starting cold.
+      const claudeSessionId = body.fork_from_claude_session_id ?? null;
       const session: Session = {
         id: randomUUID(),
         workspace_id: body.workspace_id,
-        claude_session_id: null,
+        claude_session_id: claudeSessionId,
         created_at: now,
         updated_at: now,
       };
       db.prepare(
-        `INSERT INTO sessions (id, workspace_id, claude_session_id, created_at, updated_at) VALUES (?, ?, NULL, ?, ?)`,
-      ).run(session.id, session.workspace_id, session.created_at, session.updated_at);
+        `INSERT INTO sessions (id, workspace_id, claude_session_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run(
+        session.id,
+        session.workspace_id,
+        claudeSessionId,
+        session.created_at,
+        session.updated_at,
+      );
       return session;
     },
     getSession(id) {
@@ -210,6 +235,22 @@ export interface ServerOptions {
    * the templates dir shipped alongside the api-server build.
    */
   templatesDir?: string;
+  /**
+   * Augment Context Engine session JSON (output of `auggie token print`).
+   * When set, every run gets the `auggie` MCP server injected with this
+   * value forwarded as the `AUGMENT_SESSION_AUTH` env var. Read from
+   * `CLAUDEOS_AUGMENT_SESSION_AUTH` in the CLI entry. kobramaz-a17.1.
+   */
+  augmentSessionAuth?: string | null;
+  /**
+   * Wiki dir for retrieval-at-dispatch (kobramaz-a17.5). When set, every
+   * run runs a BM25 search of the user's instruction against the wiki
+   * markdown corpus and prepends top-K excerpts to `append_system_prompt`.
+   * Pass `false` to disable; default reads CLAUDEOS_WIKI_DIR or `~/wiki`.
+   */
+  wikiDir?: string | false;
+  /** Number of top matches to inject. Default 3. */
+  wikiTopK?: number;
 }
 
 // Both forms — the dev launcher loads the renderer from http://127.0.0.1:5173
@@ -231,6 +272,16 @@ const BROWSER_MCP_NAME = "claudeos-browser";
 const MEMORY_MCP_NAME = "claudeos-memory";
 
 /**
+ * Augment Code's Context Engine MCP (kobramaz-a17.1). Hosted by Augment
+ * via their `auggie` CLI in stdio mode — repo-scale semantic RAG that
+ * indexes the user's codebase and exposes a `codebase-retrieval` tool.
+ * Opt-in via the `AUGMENT_SESSION_AUTH` env var (set
+ * `CLAUDEOS_AUGMENT_SESSION_AUTH` on the api-server; we forward it to the
+ * MCP child as `AUGMENT_SESSION_AUTH`).
+ */
+const AUGGIE_MCP_NAME = "auggie";
+
+/**
  * Inject the browser MCP into a run request's `mcp_servers` list when the
  * api-server is configured with one. Existing user-supplied entries (and any
  * pre-existing `claudeos-browser` entry) are preserved.
@@ -246,6 +297,31 @@ export function applyBrowserMcpOverlay(
     name: BROWSER_MCP_NAME,
     type: "stdio",
     command: ["node", browserMcpBin],
+  };
+  return { ...request, mcp_servers: [...existing, overlay] };
+}
+
+/**
+ * Inject the Augment Context Engine MCP when the operator has signed in
+ * via `auggie login` and surfaced the session JSON to ClaudeOS. The
+ * spawned child runs `auggie --mcp --mcp-auto-workspace`, which Augment
+ * documents as the supported integration for stdio MCP hosts. Existing
+ * caller-supplied entries are preserved; if the user already configured
+ * `auggie` via mcp_servers we don't override them.
+ */
+export function applyAugmentMcpOverlay(
+  request: RunRequest,
+  sessionAuth: string | null | undefined,
+  binary: string = "auggie",
+): RunRequest {
+  if (!sessionAuth) return request;
+  const existing = request.mcp_servers ?? [];
+  if (existing.some((s) => s.name === AUGGIE_MCP_NAME)) return request;
+  const overlay: McpServerConfig = {
+    name: AUGGIE_MCP_NAME,
+    type: "stdio",
+    command: [binary, "--mcp", "--mcp-auto-workspace"],
+    env: { AUGMENT_SESSION_AUTH: sessionAuth },
   };
   return { ...request, mcp_servers: [...existing, overlay] };
 }
@@ -280,6 +356,26 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   const repo = createRepo(db);
   const bus = new EventBus();
   const runs = new RunManager(db, bus, { permissionHookBin: opts.permissionHookBin });
+
+  // rec-5: wiki retrieval. Load lazily on first use so a missing/empty
+  // wiki dir is a silent no-op rather than a startup cost.
+  const wikiResolvedDir =
+    opts.wikiDir === false ? null : (opts.wikiDir ?? defaultWikiDir());
+  const wikiTopK = opts.wikiTopK ?? 3;
+  let wikiCache: WikiDoc[] | null = null;
+  let wikiLoaded = false;
+  const getWikiDocs = (): WikiDoc[] => {
+    if (wikiResolvedDir === null) return [];
+    if (!wikiLoaded) {
+      try {
+        wikiCache = loadWikiIndex(wikiResolvedDir);
+      } catch {
+        wikiCache = [];
+      }
+      wikiLoaded = true;
+    }
+    return wikiCache ?? [];
+  };
 
   const app = Fastify({ logger: { level: "info" } });
 
@@ -457,9 +553,29 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
       reply.code(400);
       return { error: parsed.error.format() };
     }
-    const runRequest = applyMemoryMcpOverlay(
-      applyBrowserMcpOverlay(parsed.data as RunRequest, opts.browserMcpBin),
-      opts.memoryMcpBin,
+    const baseRequest = parsed.data as RunRequest;
+    // rec-5: prepend top-K wiki excerpts to append_system_prompt before
+    // the harness sees the request. Empty wiki / no matches = no-op.
+    const wikiDocs = getWikiDocs();
+    let withWiki: RunRequest = baseRequest;
+    if (wikiDocs.length > 0) {
+      const matches = bm25Search(wikiDocs, baseRequest.instruction, wikiTopK);
+      const block = formatExcerpts(matches);
+      if (block.length > 0) {
+        withWiki = {
+          ...baseRequest,
+          append_system_prompt: baseRequest.append_system_prompt
+            ? `${block}\n\n${baseRequest.append_system_prompt}`
+            : block,
+        };
+      }
+    }
+    const runRequest = applyAugmentMcpOverlay(
+      applyMemoryMcpOverlay(
+        applyBrowserMcpOverlay(withWiki, opts.browserMcpBin),
+        opts.memoryMcpBin,
+      ),
+      opts.augmentSessionAuth,
     );
     const workspace = repo.getWorkspace(runRequest.workspace_id);
     if (!workspace) {
@@ -500,6 +616,89 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
     const ok = runs.cancel(request.params.id);
     if (!ok) return reply.code(404).send({ error: "run not active" });
     return { ok: true };
+  });
+
+  // -- Parallel runs (rec-3 / kobramaz-a17.3) -------------------------------
+  // Provisions a fresh git worktree per prompt and dispatches all runs
+  // concurrently. Each worktree gets a throwaway branch so the operator
+  // can inspect/merge later via `git diff main..claudeos/<ws>/<name>`.
+  const ParallelRunsSchema = z.object({
+    workspace_id: z.string().min(1),
+    prompts: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(64).regex(/^[a-zA-Z0-9_-]+$/),
+          instruction: z.string().min(1),
+          model: z.string().optional(),
+          permission_mode: z
+            .enum(["default", "acceptEdits", "plan", "bypassPermissions"])
+            .optional(),
+        }),
+      )
+      .min(1)
+      .max(8),
+  });
+  app.post("/parallel-runs", async (request, reply) => {
+    const parsed = ParallelRunsSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.format() });
+    const workspace = repo.getWorkspace(parsed.data.workspace_id);
+    if (!workspace) return reply.code(404).send({ error: "workspace not found" });
+
+    const dispatched: Array<{
+      run_id: string;
+      session_id: string;
+      worktree_path: string;
+      name: string;
+    }> = [];
+
+    for (const prompt of parsed.data.prompts) {
+      let worktreePath: string;
+      try {
+        worktreePath = await provisionWorktree({
+          workspaceDir: workspace.dir,
+          workspaceId: workspace.id,
+          runName: `${prompt.name}-${Date.now()}`,
+        });
+      } catch (err) {
+        if (err instanceof WorktreeError) {
+          return reply.code(400).send({
+            error: err.message,
+            code: err.code,
+            partial: dispatched,
+          });
+        }
+        throw err;
+      }
+      // Each parallel run is its own session — they're independent
+      // conversations even though they share a workspace + base commit.
+      const session = repo.createSession({ workspace_id: workspace.id });
+      const runRequest = applyAugmentMcpOverlay(
+        applyMemoryMcpOverlay(
+          applyBrowserMcpOverlay(
+            {
+              workspace_id: workspace.id,
+              session_id: session.id,
+              input_id: `parallel-${session.id}`,
+              instruction: prompt.instruction,
+              ...(prompt.model ? { model: prompt.model } : {}),
+              ...(prompt.permission_mode ? { permission_mode: prompt.permission_mode } : {}),
+            },
+            opts.browserMcpBin,
+          ),
+          opts.memoryMcpBin,
+        ),
+        opts.augmentSessionAuth,
+      );
+      const runId = runs.submit(worktreePath, null, runRequest);
+      dispatched.push({
+        run_id: runId,
+        session_id: session.id,
+        worktree_path: worktreePath,
+        name: prompt.name,
+      });
+    }
+
+    return { runs: dispatched };
   });
 
   // xh4.2: relay a user permission decision into the harness's awaited callback.
@@ -579,6 +778,12 @@ async function main(): Promise<void> {
   const browserMcpBin = process.env.CLAUDEOS_BROWSER_MCP_BIN ?? null;
   const memoryMcpBin = process.env.CLAUDEOS_MEMORY_MCP_BIN ?? null;
   const permissionHookBin = process.env.CLAUDEOS_PERMISSION_HOOK_BIN ?? null;
+  const augmentSessionAuth = process.env.CLAUDEOS_AUGMENT_SESSION_AUTH ?? null;
+  // rec-5: explicit opt-out via CLAUDEOS_WIKI_DIR=off; otherwise resolved
+  // by defaultWikiDir() to ~/wiki or whatever the env points to.
+  const wikiDirEnv = process.env.CLAUDEOS_WIKI_DIR;
+  const wikiDir: string | false | undefined =
+    wikiDirEnv === "off" || wikiDirEnv === "false" ? false : undefined;
   const app = await createServer({
     port,
     host,
@@ -586,6 +791,8 @@ async function main(): Promise<void> {
     browserMcpBin,
     memoryMcpBin,
     permissionHookBin,
+    augmentSessionAuth,
+    wikiDir,
   });
   app.log.info(`ClaudeOS api-server listening on ${host}:${port}`);
 }

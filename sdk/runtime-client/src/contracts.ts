@@ -198,6 +198,12 @@ export interface TemplateSummary {
 
 export interface CreateSessionBody {
   workspace_id: string;
+  /**
+   * Optional: fork a new session from an existing Claude conversation. The
+   * new session's first run will resume that conversation via --resume.
+   * Used by the run-history browser's "Fork from here" affordance (rec-6).
+   */
+  fork_from_claude_session_id?: string;
 }
 
 export interface SubmitRunResponse {
