@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseStream } from "./claude-code.js";
+import { buildArgs, parseStream } from "./claude-code.js";
+import { materializeMcpConfig } from "./mcp-config.js";
 import type { RunRequest } from "@claudeos/runtime-client/contracts";
 
 const REQ: RunRequest = {
@@ -260,6 +261,39 @@ test("sequence numbers are monotonic across mixed event types", () => {
   assert.equal(events.length, 4); // run_started + 2 text_delta + run_completed
   for (let i = 0; i < events.length; i++) {
     assert.equal(events[i].sequence, i, `sequence at index ${i}`);
+  }
+});
+
+test("buildArgs omits --mcp-config when no MCP servers are requested", () => {
+  const args = buildArgs(REQ, { workspaceDir: "/tmp/ws", onEvent: () => {} });
+  assert.equal(args.includes("--mcp-config"), false);
+});
+
+test("buildArgs inserts --mcp-config <path> before --resume/--model when servers are present", () => {
+  const handle = materializeMcpConfig([
+    { name: "context7", type: "stdio", command: ["npx", "-y", "@upstash/context7-mcp"] },
+  ]);
+  try {
+    const args = buildArgs(
+      { ...REQ, model: "claude-opus-4-7" },
+      { workspaceDir: "/tmp/ws", onEvent: () => {}, resumeClaudeSessionId: "abc" },
+      handle,
+    );
+
+    const mcpIdx = args.indexOf("--mcp-config");
+    assert.notEqual(mcpIdx, -1);
+    assert.equal(args[mcpIdx + 1], handle.path);
+
+    // Must come after --verbose and before --resume/--model so it's parsed as
+    // a real flag and doesn't get swallowed by --add-dir's variadic capture.
+    const verboseIdx = args.indexOf("--verbose");
+    const resumeIdx = args.indexOf("--resume");
+    const modelIdx = args.indexOf("--model");
+    assert.ok(mcpIdx > verboseIdx, "--mcp-config must follow --verbose");
+    assert.ok(mcpIdx < resumeIdx, "--mcp-config must precede --resume");
+    assert.ok(mcpIdx < modelIdx, "--mcp-config must precede --model");
+  } finally {
+    handle.cleanup();
   }
 });
 

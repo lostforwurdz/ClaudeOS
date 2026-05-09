@@ -15,6 +15,8 @@ import type {
   TokenUsage,
 } from "@claudeos/runtime-client/contracts";
 
+import { materializeMcpConfig, type MaterializedMcpConfig } from "./mcp-config.js";
+
 export interface HarnessOptions {
   /** Absolute path to the workspace directory. Set as CWD and as --add-dir. */
   workspaceDir: string;
@@ -43,62 +45,81 @@ export async function runHarness(
   request: RunRequest,
   options: HarnessOptions,
 ): Promise<HarnessResult> {
-  const args = buildArgs(request, options);
-  const env = buildEnv(options);
-  const binary = options.claudeBinary ?? "claude";
+  // Materialize MCP overlays before building argv; cleanup happens in `finally`
+  // so a tempfile is never leaked on spawn/parse errors.
+  const mcpConfig =
+    request.mcp_servers && request.mcp_servers.length > 0
+      ? materializeMcpConfig(request.mcp_servers)
+      : null;
 
-  const child = spawn(binary, args, {
-    cwd: options.workspaceDir,
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  try {
+    const args = buildArgs(request, options, mcpConfig);
+    const env = buildEnv(options);
+    const binary = options.claudeBinary ?? "claude";
 
-  const state: ParserState = {
-    request,
-    claudeSessionId: null,
-    sequence: 0,
-    currentMessageId: null,
-    contentBlockTypes: new Map(),
-    terminalEmitted: false,
-    onEvent: options.onEvent,
-  };
-
-  attachCancellation(child, options.signal);
-
-  const stderrChunks: string[] = [];
-  child.stderr.on("data", (chunk) => stderrChunks.push(chunk.toString()));
-
-  const stdoutClosed = new Promise<void>((resolve) => {
-    const rl = createInterface({ input: child.stdout });
-    rl.on("line", (line) => handleLine(line, state));
-    rl.on("close", () => resolve());
-  });
-
-  const exitCode = await new Promise<number>((resolve) => {
-    child.on("exit", (code) => resolve(code ?? -1));
-  });
-  await stdoutClosed;
-
-  if (!state.terminalEmitted) {
-    emit(state, {
-      type: "run_failed",
-      payload: {
-        error:
-          stderrChunks.join("").trim() ||
-          `claude exited with code ${exitCode} before emitting a result event`,
-        subtype: "harness_no_result",
-      },
+    const child = spawn(binary, args, {
+      cwd: options.workspaceDir,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
     });
-  }
 
-  return { claudeSessionId: state.claudeSessionId, exitCode };
+    const state: ParserState = {
+      request,
+      claudeSessionId: null,
+      sequence: 0,
+      currentMessageId: null,
+      contentBlockTypes: new Map(),
+      terminalEmitted: false,
+      onEvent: options.onEvent,
+    };
+
+    attachCancellation(child, options.signal);
+
+    const stderrChunks: string[] = [];
+    child.stderr.on("data", (chunk) => stderrChunks.push(chunk.toString()));
+
+    const stdoutClosed = new Promise<void>((resolve) => {
+      const rl = createInterface({ input: child.stdout });
+      rl.on("line", (line) => handleLine(line, state));
+      rl.on("close", () => resolve());
+    });
+
+    const exitCode = await new Promise<number>((resolve) => {
+      child.on("exit", (code) => resolve(code ?? -1));
+    });
+    await stdoutClosed;
+
+    if (!state.terminalEmitted) {
+      emit(state, {
+        type: "run_failed",
+        payload: {
+          error:
+            stderrChunks.join("").trim() ||
+            `claude exited with code ${exitCode} before emitting a result event`,
+          subtype: "harness_no_result",
+        },
+      });
+    }
+
+    return { claudeSessionId: state.claudeSessionId, exitCode };
+  } finally {
+    mcpConfig?.cleanup();
+  }
 }
 
 // ----------------------------------------------------------------------------
 // Argv + env
 // ----------------------------------------------------------------------------
 
-function buildArgs(request: RunRequest, options: HarnessOptions): string[] {
+/**
+ * Build claude argv. Exported for unit tests that verify --mcp-config wiring
+ * without spawning a subprocess.
+ */
+export function buildArgs(
+  request: RunRequest,
+  options: HarnessOptions,
+  mcpConfig: MaterializedMcpConfig | null = null,
+): string[] {
   // --add-dir is variadic: it consumes every following non-flag token until the
   // next flag. If it lands directly before the positional prompt, claude swallows
   // the prompt as a directory and aborts with "Input must be provided either
@@ -117,6 +138,9 @@ function buildArgs(request: RunRequest, options: HarnessOptions): string[] {
     "--verbose",
   );
 
+  if (mcpConfig) {
+    args.push("--mcp-config", mcpConfig.path);
+  }
   if (options.resumeClaudeSessionId) {
     args.push("--resume", options.resumeClaudeSessionId);
   }
