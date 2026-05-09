@@ -147,8 +147,25 @@ function createMainWindow(): BrowserWindow {
     void shell.openExternal(url);
     return { action: "deny" };
   });
+  // Pipe renderer console messages and load failures to the main-process
+  // terminal so dev-mode debugging doesn't require opening DevTools.
+  win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    const tag = ["[v]", "[i]", "[w]", "[e]"][level] ?? "[?]";
+    console.error(`[claudeos:renderer] ${tag} ${sourceId}:${line}  ${message}`);
+  });
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    console.error(
+      `[claudeos:renderer] did-fail-load url=${validatedURL} code=${errorCode} reason=${errorDescription}`,
+    );
+  });
   if (DEV_SERVER_URL) {
-    void win.loadURL(DEV_SERVER_URL);
+    void win.loadURL(DEV_SERVER_URL).catch((err) => {
+      console.error("[claudeos:main] loadURL failed:", err);
+    });
+    // Auto-open DevTools in dev so renderer errors are immediately visible.
+    win.webContents.once("did-finish-load", () => {
+      win.webContents.openDevTools({ mode: "right" });
+    });
   } else {
     void win.loadFile(join(__dirname, "..", "renderer", "index.html"));
   }
