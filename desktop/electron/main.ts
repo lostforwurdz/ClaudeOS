@@ -33,6 +33,17 @@ const API_HOST = "127.0.0.1";
 const API_PORT = Number(process.env.CLAUDEOS_PORT ?? 7878);
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL ?? null;
 
+// Surface promise rejections in the main process with a real stack instead of
+// the opaque "(rejection id: N)" warning. Without this any async path that
+// rejects (failed window load, IPC handler throw, harness spawn error) is
+// effectively invisible at the developer terminal.
+process.on("unhandledRejection", (reason) => {
+  console.error("[claudeos:main] UNHANDLED REJECTION:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[claudeos:main] UNCAUGHT EXCEPTION:", err);
+});
+
 let apiServer: ChildProcess | null = null;
 let mainWindow: BrowserWindow | null = null;
 let setupTokenRunner: SetupTokenRunner | null = null;
