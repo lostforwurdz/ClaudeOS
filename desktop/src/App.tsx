@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import rehypeHighlight from "rehype-highlight";
+import remarkGfm from "remark-gfm";
+
+import "highlight.js/styles/atom-one-dark.css";
 
 import type { Attachment, Workspace } from "@claudeos/runtime-client/contracts";
 
@@ -700,9 +705,41 @@ function MessageView({ message }: { message: Message }) {
       >
         {message.role}
       </div>
+      <MessageBody message={message} />
+    </div>
+  );
+}
+
+function MessageBody({ message }: { message: Message }) {
+  // User and tool messages stay as preformatted text — user input often
+  // contains code we don't want auto-formatted, and tool transcripts are
+  // already JSON/log lines that look better verbatim.
+  if (message.role !== "assistant") {
+    return (
       <div style={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.5 }}>
         {message.text || "…"}
       </div>
+    );
+  }
+  // Assistant messages render through markdown so fenced code blocks get
+  // syntax-highlighted, lists/headings/links display properly. ReactMarkdown
+  // tolerates partial markdown during streaming — the user just sees
+  // formatting "snap in" once a delimiter completes.
+  return (
+    <div className="md-body" style={{ fontSize: 13, lineHeight: 1.55 }}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+        components={{
+          a: ({ children, href, ...rest }) => (
+            <a href={href} target="_blank" rel="noopener noreferrer" {...rest}>
+              {children}
+            </a>
+          ),
+        }}
+      >
+        {message.text || "…"}
+      </ReactMarkdown>
     </div>
   );
 }

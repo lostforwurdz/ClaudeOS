@@ -22,8 +22,12 @@
     "@claudeos/runtime-client": "file:../sdk/runtime-client",
     "@lydell/node-pty": "^1.2.0-beta.12",
     "electron-updater": "^6.8.3",
+    "highlight.js": "^11.11.1",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

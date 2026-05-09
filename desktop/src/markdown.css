@@ -1,0 +1,84 @@
+/* Dark-theme tweaks for ReactMarkdown bodies (xh4.1).
+ * Highlight.js's atom-one-dark theme handles the inside of code blocks; this
+ * file styles the surrounding markdown elements (paragraphs, lists, blockquotes,
+ * inline code, links) to match the rest of the ClaudeOS UI. */
+
+.md-body p { margin: 0 0 8px; }
+.md-body p:last-child { margin-bottom: 0; }
+
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+  margin: 14px 0 6px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  line-height: 1.25;
+}
+.md-body h1 { font-size: 17px; }
+.md-body h2 { font-size: 15px; }
+.md-body h3 { font-size: 14px; }
+.md-body h4 { font-size: 13px; opacity: 0.85; }
+
+.md-body ul,
+.md-body ol {
+  margin: 4px 0 8px 20px;
+  padding: 0;
+}
+.md-body li { margin-bottom: 2px; }
+
+.md-body a { color: #9bc1ff; text-decoration: underline; }
+.md-body a:hover { color: #b9d3ff; }
+
+.md-body blockquote {
+  margin: 6px 0;
+  padding: 4px 12px;
+  border-left: 3px solid #2a2a2a;
+  color: #b8b8b8;
+  background: #121212;
+}
+
+.md-body code {
+  background: #1a1a1a;
+  border: 1px solid #232323;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.md-body pre {
+  background: #161616;
+  border: 1px solid #232323;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 6px 0;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.md-body pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+.md-body table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  font-size: 12px;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid #2a2a2a;
+  padding: 4px 8px;
+  text-align: left;
+}
+.md-body th { background: #161616; font-weight: 600; }
+
+.md-body hr {
+  border: none;
+  border-top: 1px solid #1e1e1e;
+  margin: 12px 0;
+}
