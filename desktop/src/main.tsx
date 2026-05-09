@@ -1,56 +1,13 @@
-import * as Sentry from "@sentry/electron/renderer";
-import ReactDOM from "react-dom/client";
-import App from "./App";
-import "./index.css";
-import "@holaboss/editor/styles.css";
-import {
-  enrichRendererSentryEvent,
-  pushRendererSentryActivity,
-} from "./lib/rendererSentry";
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
 
-Sentry.init({
-  enableLogs: true,
-  maxBreadcrumbs: 200,
-  integrations: [
-    Sentry.consoleLoggingIntegration({
-      levels: ["warn", "error"],
-    }),
-    Sentry.eventLoopBlockIntegration({
-      threshold: 2000,
-    }),
-  ],
-  beforeSend(event, hint) {
-    return enrichRendererSentryEvent(event, hint);
-  },
-});
-Sentry.setTag("process_kind", "electron_renderer");
-pushRendererSentryActivity("lifecycle", "renderer initialized", {
-  pathname: window.location.pathname,
-  search: window.location.search,
-});
-window.addEventListener("online", () => {
-  pushRendererSentryActivity("connectivity", "renderer went online", {
-    online: true,
-  });
-});
-window.addEventListener("offline", () => {
-  pushRendererSentryActivity("connectivity", "renderer went offline", {
-    online: false,
-  });
-});
-document.addEventListener("visibilitychange", () => {
-  pushRendererSentryActivity("visibility", "renderer visibility changed", {
-    visibility_state: document.visibilityState,
-    focused: document.hasFocus(),
-  });
-});
+import { App } from "./App.js";
 
-// Stamp platform on <html> so CSS can opt into translucent surfaces on
-// macOS (where the BrowserWindow has vibrancy enabled). Other platforms
-// keep solid surfaces — the OS material isn't there to show through.
-const platform = window.electronAPI?.platform;
-if (platform) {
-  document.documentElement.dataset.platform = platform;
-}
+const root = document.getElementById("root");
+if (!root) throw new Error("root element missing");
 
-ReactDOM.createRoot(document.getElementById("root")!).render(<App />);
+createRoot(root).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);
