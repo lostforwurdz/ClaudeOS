@@ -17,8 +17,17 @@ import {
   runPreflight,
   type PreflightResult,
 } from "./preflight.js";
+import {
+  createSetupTokenRunner,
+  createRealPtyFactory,
+  type SetupTokenRunner,
+} from "./setup-token-runner.js";
 
 const SAVE_TOKEN_CHANNEL = "claudeos:save-token";
+const SETUP_TOKEN_START_CHANNEL = "claudeos:setup-token:start";
+const SETUP_TOKEN_WRITE_CHANNEL = "claudeos:setup-token:write";
+const SETUP_TOKEN_DATA_CHANNEL = "claudeos:setup-token:data";
+const SETUP_TOKEN_EXIT_CHANNEL = "claudeos:setup-token:exit";
 
 const API_HOST = "127.0.0.1";
 const API_PORT = Number(process.env.CLAUDEOS_PORT ?? 7878);
@@ -26,6 +35,7 @@ const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL ?? null;
 
 let apiServer: ChildProcess | null = null;
 let mainWindow: BrowserWindow | null = null;
+let setupTokenRunner: SetupTokenRunner | null = null;
 
 /**
  * Resolve the api-server entry path. In dev `electron/main.ts` is built to
@@ -145,7 +155,7 @@ function resolveSetupPreloadPath(): string {
 function createSetupWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 720,
-    height: 560,
+    height: 620,
     backgroundColor: "#0e0e0e",
     title: "ClaudeOS — Sign in",
     webPreferences: {
@@ -156,6 +166,13 @@ function createSetupWindow(): BrowserWindow {
   });
   const html = renderSetupHtml();
   void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  // Kill any running PTY when the user closes the setup window early.
+  win.on("closed", () => {
+    if (setupTokenRunner) {
+      setupTokenRunner.kill();
+      setupTokenRunner = null;
+    }
+  });
   return win;
 }
 
@@ -219,6 +236,51 @@ void app.whenReady().then(async () => {
       }, 350);
     }
     return result;
+  });
+
+  // Wire PTY-based setup-token IPC handlers (dcp.10 v2 / kobramaz-7ho).
+  ipcMain.handle(SETUP_TOKEN_START_CHANNEL, async (): Promise<void> => {
+    // Kill any lingering runner from a previous attempt.
+    if (setupTokenRunner) {
+      setupTokenRunner.kill();
+      setupTokenRunner = null;
+    }
+
+    const setupWindow = mainWindow; // mainWindow is the setup window at this point
+
+    setupTokenRunner = createSetupTokenRunner({
+      claudeBinary: bundledClaudePath ?? "claude",
+      ptyFactory: createRealPtyFactory(),
+      onData: (chunk) => {
+        if (setupWindow && !setupWindow.isDestroyed()) {
+          setupWindow.webContents.send(SETUP_TOKEN_DATA_CHANNEL, chunk);
+        }
+      },
+      onToken: (token) => {
+        // Auto-save the captured token via the existing save flow.
+        const result = authStore.saveToken(token);
+        if (result.ok) {
+          setTimeout(() => {
+            if (setupWindow && !setupWindow.isDestroyed()) setupWindow.close();
+            void startMain(token.trim());
+          }, 350);
+        }
+      },
+      onExit: (code) => {
+        setupTokenRunner = null;
+        if (setupWindow && !setupWindow.isDestroyed()) {
+          setupWindow.webContents.send(SETUP_TOKEN_EXIT_CHANNEL, code);
+        }
+      },
+    });
+
+    setupTokenRunner.start();
+  });
+
+  ipcMain.handle(SETUP_TOKEN_WRITE_CHANNEL, (_event, raw: unknown): void => {
+    if (typeof raw === "string" && setupTokenRunner) {
+      setupTokenRunner.write(raw);
+    }
   });
 
   if (startupToken && startupToken.trim().length > 0) {

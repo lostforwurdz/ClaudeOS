@@ -162,14 +162,19 @@ function escapeHtml(s: string): string {
 }
 
 /**
- * Render an interactive token-paste page (dcp.10). Replaces the static
- * missing_oauth_token preflight error with a form the user submits to the
- * main process via the `claudeos:save-token` IPC channel.
+ * Render an interactive token-paste page (dcp.10 / kobramaz-7ho). Replaces
+ * the static missing_oauth_token preflight error with two paths:
+ *
+ *   1. **Interactive PTY path** (primary): "Run claude setup-token in-app"
+ *      spawns the bundled CLI inside the window, streams live output, and
+ *      auto-captures the token when it appears.
+ *
+ *   2. **Paste path** (fallback): the original form where the user copies
+ *      the token from an external terminal and pastes it.
  *
  * Self-contained: no external CSS, no fonts, no Vite. The preload script
  * (loaded by the BrowserWindow that displays this page) exposes
- * `window.claudeosSetup.submit(token)` and re-routes results back via
- * `window.claudeosSetup.onResult(handler)`.
+ * `window.claudeosSetup.submit(token)` and the PTY bridge methods.
  */
 export function renderSetupHtml(): string {
   return `<!doctype html>
@@ -181,7 +186,7 @@ export function renderSetupHtml(): string {
       :root { color-scheme: dark; }
       body {
         margin: 0;
-        padding: 48px;
+        padding: 36px 48px;
         background: #0e0e0e;
         color: #e5e5e5;
         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -195,7 +200,7 @@ export function renderSetupHtml(): string {
         font-size: 12px;
         color: #9bc1ff;
       }
-      pre {
+      pre.cmd {
         background: #161616;
         border: 1px solid #2a2a2a;
         border-radius: 4px;
@@ -228,6 +233,12 @@ export function renderSetupHtml(): string {
       }
       button:hover:not(:disabled) { background: #2a2a2a; }
       button:disabled { opacity: 0.5; cursor: not-allowed; }
+      button.primary {
+        background: #1a3a2a;
+        color: #5fdcb6;
+        border-color: #2a5a3a;
+      }
+      button.primary:hover:not(:disabled) { background: #224a34; }
       .pill {
         display: inline-block;
         padding: 2px 8px;
@@ -239,6 +250,54 @@ export function renderSetupHtml(): string {
         text-transform: uppercase;
         margin-bottom: 12px;
       }
+      .section-divider {
+        border: none;
+        border-top: 1px solid #222;
+        margin: 20px 0;
+      }
+      .section-label {
+        font-size: 11px;
+        color: #666;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 8px;
+      }
+      #terminal {
+        background: #0a0a0a;
+        border: 1px solid #2a2a2a;
+        border-radius: 4px;
+        padding: 10px 12px;
+        margin-top: 12px;
+        min-height: 80px;
+        max-height: 220px;
+        overflow-y: auto;
+        font-family: "JetBrains Mono", Menlo, Consolas, monospace;
+        font-size: 11px;
+        line-height: 1.5;
+        color: #c8c8c8;
+        white-space: pre-wrap;
+        word-break: break-all;
+        display: none;
+      }
+      #terminal.active { display: block; }
+      #pty-input-row {
+        display: none;
+        margin-top: 8px;
+        gap: 8px;
+        align-items: center;
+      }
+      #pty-input-row.active { display: flex; }
+      #pty-input {
+        flex: 1;
+        background: #161616;
+        color: #e5e5e5;
+        border: 1px solid #2a2a2a;
+        border-radius: 4px;
+        padding: 6px 10px;
+        font-family: "JetBrains Mono", Menlo, Consolas, monospace;
+        font-size: 12px;
+      }
+      #pty-send { margin-top: 0; }
       #status { margin-top: 12px; min-height: 18px; font-size: 12px; }
       #status.ok { color: #5fdcb6; }
       #status.err { color: #ff6464; }
@@ -248,8 +307,23 @@ export function renderSetupHtml(): string {
     <span class="pill">First-run setup</span>
     <h1>Sign in to Claude</h1>
     <p>ClaudeOS needs a long-lived OAuth token to authenticate against your Claude subscription.</p>
+
+    <!-- Primary: in-app PTY flow -->
+    <div class="section-label">Option 1 — run in-app</div>
+    <p style="margin:0 0 8px">Click the button below to open the sign-in flow inside this window. Your browser will open for authentication.</p>
+    <button class="primary" id="run-pty">Run claude setup-token in-app</button>
+    <pre id="terminal" aria-live="polite" aria-label="Terminal output"></pre>
+    <div id="pty-input-row">
+      <input id="pty-input" type="text" placeholder="Paste code here if prompted…" autocomplete="off" spellcheck="false" />
+      <button id="pty-send">Send</button>
+    </div>
+
+    <hr class="section-divider" />
+
+    <!-- Fallback: manual paste -->
+    <div class="section-label">Option 2 — paste manually</div>
     <ol>
-      <li>Open a terminal and run:<pre>claude setup-token</pre></li>
+      <li>Open a terminal and run:<pre class="cmd">claude setup-token</pre></li>
       <li>Sign in via the browser flow that opens.</li>
       <li>Copy the token printed at the end and paste it below.</li>
     </ol>
@@ -257,33 +331,117 @@ export function renderSetupHtml(): string {
     <div>
       <button id="save" disabled>Save token</button>
     </div>
+
     <div id="status" role="status"></div>
+
     <script>
-      const tokenEl = document.getElementById("token");
-      const saveBtn = document.getElementById("save");
-      const statusEl = document.getElementById("status");
-      tokenEl.addEventListener("input", () => {
-        saveBtn.disabled = tokenEl.value.trim().length === 0;
-      });
-      saveBtn.addEventListener("click", async () => {
-        saveBtn.disabled = true;
-        statusEl.className = "";
-        statusEl.textContent = "Saving…";
+      /* ------------------------------------------------------------------ */
+      /* Helpers                                                              */
+      /* ------------------------------------------------------------------ */
+
+      // Strip ANSI escape sequences so the plain <pre> stays readable.
+      function stripAnsi(str) {
+        return str
+          .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+          .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\\\)/g, "")
+          .replace(/\x1b[^[\]]/g, "");
+      }
+
+      function setStatus(msg, cls) {
+        const el = document.getElementById("status");
+        el.className = cls || "";
+        el.textContent = msg;
+      }
+
+      /* Save token via IPC and handle success/failure feedback. */
+      async function saveAndClose(token) {
+        setStatus("Saving token…", "");
         try {
-          const result = await window.claudeosSetup.submit(tokenEl.value);
+          const result = await window.claudeosSetup.submit(token);
           if (result.ok) {
-            statusEl.className = "ok";
-            statusEl.textContent = result.warning
-              ? "Saved (" + result.mode + "): " + result.warning
-              : "Saved (" + result.mode + "). Starting ClaudeOS…";
+            setStatus(
+              result.warning
+                ? "Saved (" + result.mode + "): " + result.warning
+                : "Saved (" + result.mode + "). Starting ClaudeOS…",
+              "ok"
+            );
           } else {
-            statusEl.className = "err";
-            statusEl.textContent = result.error;
-            saveBtn.disabled = false;
+            setStatus(result.error, "err");
           }
         } catch (err) {
-          statusEl.className = "err";
-          statusEl.textContent = String(err && err.message ? err.message : err);
+          setStatus(String(err && err.message ? err.message : err), "err");
+        }
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* PTY flow                                                             */
+      /* ------------------------------------------------------------------ */
+
+      const runBtn   = document.getElementById("run-pty");
+      const terminal = document.getElementById("terminal");
+      const inputRow = document.getElementById("pty-input-row");
+      const ptyInput = document.getElementById("pty-input");
+      const ptySend  = document.getElementById("pty-send");
+
+      // Register PTY data/exit listeners once (they accumulate across calls).
+      window.claudeosSetup.onSetupData(function(chunk) {
+        const clean = stripAnsi(chunk)
+          .replace(/\\r\\n/g, "\\n")
+          .replace(/\\r/g, "\\n");
+        terminal.textContent += clean;
+        terminal.scrollTop = terminal.scrollHeight;
+        // Show the input row if the CLI is waiting for a code paste.
+        if (/Paste code here/i.test(terminal.textContent)) {
+          inputRow.classList.add("active");
+        }
+      });
+
+      window.claudeosSetup.onSetupExit(function(code) {
+        inputRow.classList.remove("active");
+        if (code !== 0) {
+          setStatus("setup-token exited with code " + code + ". Check output above.", "err");
+        }
+      });
+
+      runBtn.addEventListener("click", async function() {
+        runBtn.disabled = true;
+        terminal.textContent = "";
+        terminal.classList.add("active");
+        setStatus("", "");
+        try {
+          await window.claudeosSetup.startSetupToken();
+        } catch (err) {
+          setStatus("Failed to start: " + String(err && err.message ? err.message : err), "err");
+          runBtn.disabled = false;
+        }
+      });
+
+      ptySend.addEventListener("click", function() {
+        const val = ptyInput.value;
+        if (!val.trim()) return;
+        window.claudeosSetup.writeSetupInput(val + "\\r");
+        ptyInput.value = "";
+      });
+
+      ptyInput.addEventListener("keydown", function(e) {
+        if (e.key === "Enter") ptySend.click();
+      });
+
+      /* ------------------------------------------------------------------ */
+      /* Paste-token fallback                                                 */
+      /* ------------------------------------------------------------------ */
+
+      const tokenEl = document.getElementById("token");
+      const saveBtn  = document.getElementById("save");
+
+      tokenEl.addEventListener("input", function() {
+        saveBtn.disabled = tokenEl.value.trim().length === 0;
+      });
+
+      saveBtn.addEventListener("click", async function() {
+        saveBtn.disabled = true;
+        await saveAndClose(tokenEl.value);
+        if (document.getElementById("status").className !== "ok") {
           saveBtn.disabled = false;
         }
       });
