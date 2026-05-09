@@ -10,6 +10,20 @@ appId: com.claudeos.app
 productName: ClaudeOS
 copyright: "(c) ClaudeOS contributors"
 
+# Auto-update feed (dcp.11). electron-builder writes the matching `latest*.yml`
+# manifests next to the installer, and electron-updater reads from this
+# provider at runtime. Releases must be published to the matching GitHub repo
+# (see release pipeline / pack:* scripts) for updates to surface.
+#
+# Codesigning is NOT yet configured here; until each platform target is signed,
+# update installs will trip OS gatekeepers (macOS Gatekeeper, Windows
+# SmartScreen). Track signing setup as a follow-up before enabling auto-update
+# for non-developer users.
+publish:
+  provider: github
+  owner: lostforwurdz
+  repo: ClaudeOS
+
 directories:
   output: build
   buildResources: build-resources

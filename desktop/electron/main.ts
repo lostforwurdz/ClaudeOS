@@ -2,9 +2,14 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { app, BrowserWindow, ipcMain, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from "electron";
+import { autoUpdater } from "electron-updater";
 
 import { createAuthStore, type SaveResult } from "./auth-store.js";
+import {
+  installAutoUpdater,
+  type AutoUpdaterLike,
+} from "./auto-updater.js";
 import { resolveBundledClaude } from "./bundled-claude.js";
 import {
   renderPreflightHtml,
@@ -188,6 +193,13 @@ void app.whenReady().then(async () => {
     process.env.CLAUDE_CODE_OAUTH_TOKEN = token;
     apiServer = spawnApiServer(result.claudePath);
     mainWindow = createMainWindow();
+
+    // dcp.11: silent check + download, prompt before restart. No-op in dev.
+    installAutoUpdater({
+      isPackaged: app.isPackaged,
+      updater: autoUpdater as unknown as AutoUpdaterLike,
+      showConfirmDialog: async (opts) => dialog.showMessageBox(opts),
+    });
   };
 
   // Wire the IPC handler before opening the setup window so the renderer
