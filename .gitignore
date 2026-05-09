@@ -5,27 +5,21 @@ __pycache__/
 out/
 
 .venv/
-desktop/node_modules/
+node_modules/
+*.tsbuildinfo
+*.local
+.env
+.env.*
+
 desktop/out/
 desktop/.cache/
-desktop/*.tsbuildinfo
-desktop/.env
-desktop/.env.*
-desktop/*.local
-runtime/harness-host/node_modules/
-runtime/harness-host/dist/
-runtime/api-server/node_modules/
+
+runtime/harness/dist/
 runtime/api-server/dist/
-runtime/state-store/node_modules/
 runtime/state-store/dist/
 
-node_modules/
-website/docs/docs/.vitepress/cache/
-website/docs/docs/.vitepress/dist/
-website/docs/.turbo/
-website/docs/.react-router/
-website/docs/.source/
-website/docs/build/
+sdk/runtime-client/dist/
+
 .superpowers
 .worktrees/
 *.p12

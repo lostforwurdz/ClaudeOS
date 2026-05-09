@@ -1,8 +1,7 @@
 {
-  "name": "@claudeos/runtime-client",
-  "version": "0.0.0",
-  "description": "ClaudeOS runtime client — shared contracts and TypeScript client for the api-server",
+  "name": "@claudeos/harness",
   "private": true,
+  "version": "0.0.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,10 +9,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./contracts": {
-      "types": "./dist/contracts.d.ts",
-      "default": "./dist/contracts.js"
     }
   },
   "files": [
@@ -21,14 +16,16 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "node --import tsx --test src/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
-  "license": "MIT",
-  "engines": {
-    "node": ">=20"
+  "dependencies": {
+    "@claudeos/runtime-client": "file:../../sdk/runtime-client"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
+    "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }
 }
