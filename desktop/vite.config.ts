@@ -4,6 +4,11 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   root: ".",
+  // Packaged Electron loads the renderer via `file://`, so `<script src="/assets/...">`
+  // resolves to filesystem root and 404s. Use relative paths so both dev (served
+  // from /) and production (file:// or relative) load correctly. Discovered while
+  // wiring up the E2E suite (kobramaz-ajr.5).
+  base: "./",
   build: {
     outDir: "out/renderer",
     emptyOutDir: true,
