@@ -165,7 +165,10 @@ export interface ServerOptions {
   permissionHookBin?: string | null;
 }
 
-const DEFAULT_DEV_ORIGINS = ["http://localhost:5173"];
+// Both forms — the dev launcher loads the renderer from http://127.0.0.1:5173
+// so the BrowserWindow's origin matches, but allow `localhost` too in case the
+// user overrides VITE_DEV_SERVER_URL or runs the renderer outside the launcher.
+const DEFAULT_DEV_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"];
 
 /**
  * Canonical MCP server name for the ClaudeOS browser MCP. Mirrors the
