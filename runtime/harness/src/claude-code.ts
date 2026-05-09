@@ -99,15 +99,23 @@ export async function runHarness(
 // ----------------------------------------------------------------------------
 
 function buildArgs(request: RunRequest, options: HarnessOptions): string[] {
-  const args = [
+  // --add-dir is variadic: it consumes every following non-flag token until the
+  // next flag. If it lands directly before the positional prompt, claude swallows
+  // the prompt as a directory and aborts with "Input must be provided either
+  // through stdin or as a prompt argument when using --print". So all --add-dir
+  // values must precede the next flag, and in practice we put them at the head.
+  const args: string[] = ["--add-dir", options.workspaceDir];
+  for (const dir of request.add_dirs ?? []) {
+    args.push("--add-dir", dir);
+  }
+
+  args.push(
     "--print",
     "--output-format",
     "stream-json",
     "--include-partial-messages",
     "--verbose",
-    "--add-dir",
-    options.workspaceDir,
-  ];
+  );
 
   if (options.resumeClaudeSessionId) {
     args.push("--resume", options.resumeClaudeSessionId);
@@ -120,9 +128,6 @@ function buildArgs(request: RunRequest, options: HarnessOptions): string[] {
   }
   if (request.permission_mode) {
     args.push("--permission-mode", request.permission_mode);
-  }
-  for (const dir of request.add_dirs ?? []) {
-    args.push("--add-dir", dir);
   }
 
   args.push(request.instruction);

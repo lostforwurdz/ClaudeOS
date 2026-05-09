@@ -26,5 +26,9 @@
     "runtime-client:typecheck": "npm --prefix sdk/runtime-client run typecheck",
     "runtime:test": "npm run harness:test && npm run api-server:test",
     "runtime:typecheck": "npm run harness:typecheck && npm run api-server:typecheck"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "ws": "^8.20.0"
   }
 }

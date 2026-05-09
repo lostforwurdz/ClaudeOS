@@ -78,17 +78,24 @@ export class RunManager {
     );
 
     let lastEventType: RunEvent["type"] | null = null;
-    let observedClaudeSessionId: string | null = claudeSessionId;
 
     try {
-      const result = await runHarness(request, {
+      await runHarness(request, {
         workspaceDir,
         resumeClaudeSessionId: claudeSessionId,
         signal,
         onEvent: (event) => {
           lastEventType = event.type;
+          // Persist claude_session_id synchronously on run_started so a client
+          // that queries /sessions/:id immediately after the WS closes always
+          // sees the bound id (the WS closes on run_completed, before the
+          // outer await resolves).
           if (event.type === "run_started" && event.payload.claude_session_id) {
-            observedClaudeSessionId = event.payload.claude_session_id;
+            updateSession.run(
+              event.payload.claude_session_id,
+              new Date().toISOString(),
+              request.session_id,
+            );
           }
           try {
             insertEvent.run(runId, event.sequence, JSON.stringify(event));
@@ -99,14 +106,6 @@ export class RunManager {
         },
       });
 
-      if (observedClaudeSessionId) {
-        updateSession.run(
-          observedClaudeSessionId,
-          new Date().toISOString(),
-          request.session_id,
-        );
-      }
-
       const status =
         signal.aborted
           ? "cancelled"
@@ -114,11 +113,6 @@ export class RunManager {
           ? "completed"
           : "failed";
       updateRun.run(status, new Date().toISOString(), runId);
-
-      // If the harness exited non-zero or never emitted a terminal event we
-      // already synthesized run_failed inside the harness; the status above
-      // reflects that.
-      void result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const failed: RunEvent = {
