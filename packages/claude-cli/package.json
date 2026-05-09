@@ -1,0 +1,12 @@
+{
+  "name": "@claudeos/claude-cli",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Sidecar package that pins the Claude Code CLI version bundled into the ClaudeOS desktop app. The binary lives in node_modules/@anthropic-ai/claude-code/bin/ and is copied verbatim into the packaged app's resources via electron-builder's extraResources.",
+  "scripts": {
+    "install:bundle": "npm install --no-audit --no-fund"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.138"
+  }
+}

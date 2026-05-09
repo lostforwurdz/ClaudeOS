@@ -22,8 +22,14 @@ export interface PreflightInputs {
   oauthToken: string | undefined;
   /** Which-lookup; defaults to spawning `which`/`where`. Injectable for tests. */
   which?: WhichLookup;
-  /** Override the binary name. Defaults to "claude". */
+  /** Override the binary name used for the PATH lookup. Defaults to "claude". */
   claudeBinary?: string;
+  /**
+   * Absolute path to a claude binary that ships with the app (dcp.9). When
+   * present, preflight skips the PATH lookup entirely so packaged users don't
+   * need their own Claude Code install. Verified for existence by the caller.
+   */
+  bundledClaudePath?: string | null;
 }
 
 export interface PreflightFailure {
@@ -58,7 +64,9 @@ export async function runPreflight(inputs: PreflightInputs): Promise<PreflightRe
   const which = inputs.which ?? defaultWhich;
   const binary = inputs.claudeBinary ?? "claude";
 
-  const claudePath = await which(binary);
+  // Bundled CLI (dcp.9) wins when present — skip the PATH lookup so the user
+  // never needs a system-wide `claude` install.
+  const claudePath = inputs.bundledClaudePath ?? (await which(binary));
   if (!claudePath) {
     return {
       ok: false,

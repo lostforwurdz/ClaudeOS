@@ -1,8 +1,10 @@
 # electron-builder config for ClaudeOS.
 #
-# Bundles the desktop renderer + electron main, plus the api-server and
-# browser-mcp dist trees, into per-OS installers. The claude CLI itself is
-# NOT bundled today (see dcp.9); the preflight checks for it on PATH.
+# Bundles the desktop renderer + electron main, the api-server and browser-mcp
+# dist trees, plus the pinned `@anthropic-ai/claude-code` binary (dcp.9), into
+# per-OS installers. Each per-platform installer carries the matching native
+# binary (`pack:linux`/`pack:mac`/`pack:win` must each run on a host whose
+# `npm install` resolves the right optional dependency).
 
 appId: com.claudeos.app
 productName: ClaudeOS
@@ -32,6 +34,12 @@ extraResources:
     to: "browser-mcp/dist"
   - from: "../packages/browser-mcp/node_modules"
     to: "browser-mcp/node_modules"
+    filter: ["**/*", "!**/.cache", "!**/test", "!**/tests", "!**/*.md"]
+  # Pinned `@anthropic-ai/claude-code` CLI (dcp.9). The bundled-claude resolver
+  # in `desktop/electron/bundled-claude.ts` looks for the binary at
+  # `<resourcesPath>/claude-cli/node_modules/@anthropic-ai/claude-code/bin/claude.exe`.
+  - from: "../packages/claude-cli/node_modules"
+    to: "claude-cli/node_modules"
     filter: ["**/*", "!**/.cache", "!**/test", "!**/tests", "!**/*.md"]
 
 asar: true

@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 
 import { app, BrowserWindow, shell } from "electron";
 
+import { resolveBundledClaude } from "./bundled-claude.js";
 import {
   renderPreflightHtml,
   runPreflight,
@@ -119,8 +120,14 @@ function createPreflightWindow(failure: Extract<PreflightResult, { ok: false }>)
 }
 
 void app.whenReady().then(async () => {
+  const bundledClaudePath = resolveBundledClaude({
+    resourcesPath: process.resourcesPath,
+    electronMainDir: __dirname,
+    packaged: app.isPackaged,
+  });
   const result = await runPreflight({
     oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN,
+    bundledClaudePath,
   });
 
   if (!result.ok) {

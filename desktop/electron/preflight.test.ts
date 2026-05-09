@@ -51,6 +51,37 @@ test("missing_claude_cli short-circuits before the token check", async () => {
   assert.equal(result.code, "missing_claude_cli", "claude check must run first");
 });
 
+test("preflight: bundledClaudePath wins over PATH lookup (skips `which`)", async () => {
+  let whichCalled = false;
+  const whichSpy: WhichLookup = async () => {
+    whichCalled = true;
+    return "/usr/local/bin/claude";
+  };
+  const result = await runPreflight({
+    oauthToken: "sk-...",
+    bundledClaudePath: "/opt/claudeos/resources/claude-cli/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+    which: whichSpy,
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error("type narrow");
+  assert.equal(
+    result.claudePath,
+    "/opt/claudeos/resources/claude-cli/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+  );
+  assert.equal(whichCalled, false, "PATH lookup must not run when bundled CLI is available");
+});
+
+test("preflight: a null bundledClaudePath falls back to PATH lookup", async () => {
+  const result = await runPreflight({
+    oauthToken: "sk-...",
+    bundledClaudePath: null,
+    which: okWhich,
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error("type narrow");
+  assert.equal(result.claudePath, "/usr/local/bin/claude");
+});
+
 test("renderPreflightHtml escapes user-controlled content and embeds the body", () => {
   const html = renderPreflightHtml({
     ok: false,
