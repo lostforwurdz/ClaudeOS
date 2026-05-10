@@ -23,6 +23,12 @@ export interface Workspace {
    * entirely to user/project settings.
    */
   hooks?: WorkspaceHooks | null;
+  /**
+   * vk3.1: which LLM runner backs runs in this workspace.
+   * Default "claude-code". Future runners (Codex CLI, Gemini CLI, Aider,
+   * direct API) added under kobramaz-prz.
+   */
+  runner_kind: string;
 }
 
 export interface WorkspaceHooks {

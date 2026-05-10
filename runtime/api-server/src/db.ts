@@ -13,7 +13,9 @@ CREATE TABLE IF NOT EXISTS workspaces (
   -- a17.8: per-workspace hooks override (PostToolUse / Stop / etc.).
   -- JSON-encoded WorkspaceHooks; NULL when the workspace defers entirely
   -- to user/project settings.
-  hooks_json TEXT
+  hooks_json TEXT,
+  -- vk3.1: which LLM runner backs runs in this workspace.
+  runner_kind TEXT NOT NULL DEFAULT 'claude-code'
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -64,6 +66,13 @@ export function openDb(path: string = defaultDbPath()): DatabaseType {
     .all() as Array<{ name: string }>;
   if (!cols.some((c) => c.name === "hooks_json")) {
     db.exec(`ALTER TABLE workspaces ADD COLUMN hooks_json TEXT`);
+  }
+  // vk3.1: add runner_kind on existing DBs. SQLite fills existing rows with
+  // the DEFAULT so no data migration is needed. Idempotent.
+  if (!cols.some((c) => c.name === "runner_kind")) {
+    db.exec(
+      `ALTER TABLE workspaces ADD COLUMN runner_kind TEXT NOT NULL DEFAULT 'claude-code'`,
+    );
   }
   return db;
 }

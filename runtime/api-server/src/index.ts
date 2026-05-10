@@ -45,6 +45,8 @@ const CreateWorkspaceSchema = z.object({
   name: z.string().min(1),
   dir: z.string().min(1),
   template: z.string().min(1).optional(),
+  // vk3.1: caller may specify a runner kind; default applied server-side.
+  runner_kind: z.string().optional(),
 });
 
 // a17.8: PATCH accepts either a rename, a hooks update, or both. When the
@@ -159,6 +161,8 @@ function createRepo(db: DatabaseType): Repo {
   return {
     createWorkspace(body) {
       const now = new Date().toISOString();
+      // vk3.1: body may carry runner_kind from the request schema; default to "claude-code".
+      const runnerKind = (body as { runner_kind?: string }).runner_kind ?? "claude-code";
       const ws: Workspace = {
         id: randomUUID(),
         name: body.name,
@@ -166,17 +170,18 @@ function createRepo(db: DatabaseType): Repo {
         created_at: now,
         updated_at: now,
         hooks: null,
+        runner_kind: runnerKind,
       };
       db.prepare(
-        `INSERT INTO workspaces (id, name, dir, created_at, updated_at, hooks_json)
-         VALUES (?, ?, ?, ?, ?, NULL)`,
-      ).run(ws.id, ws.name, ws.dir, ws.created_at, ws.updated_at);
+        `INSERT INTO workspaces (id, name, dir, created_at, updated_at, hooks_json, runner_kind)
+         VALUES (?, ?, ?, ?, ?, NULL, ?)`,
+      ).run(ws.id, ws.name, ws.dir, ws.created_at, ws.updated_at, ws.runner_kind);
       return ws;
     },
     listWorkspaces() {
       const rows = db
         .prepare(
-          `SELECT id, name, dir, created_at, updated_at, hooks_json
+          `SELECT id, name, dir, created_at, updated_at, hooks_json, runner_kind
              FROM workspaces ORDER BY created_at DESC`,
         )
         .all() as Array<Workspace & { hooks_json: string | null }>;
@@ -187,12 +192,13 @@ function createRepo(db: DatabaseType): Repo {
         created_at: r.created_at,
         updated_at: r.updated_at,
         hooks: parseWorkspaceHooks(r.hooks_json),
+        runner_kind: r.runner_kind,
       }));
     },
     getWorkspace(id) {
       const row = db
         .prepare(
-          `SELECT id, name, dir, created_at, updated_at, hooks_json
+          `SELECT id, name, dir, created_at, updated_at, hooks_json, runner_kind
              FROM workspaces WHERE id = ?`,
         )
         .get(id) as
@@ -206,6 +212,7 @@ function createRepo(db: DatabaseType): Repo {
         created_at: row.created_at,
         updated_at: row.updated_at,
         hooks: parseWorkspaceHooks(row.hooks_json),
+        runner_kind: row.runner_kind,
       };
     },
     renameWorkspace(id, name) {
@@ -713,6 +720,7 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
       session.claude_session_id,
       runRequest,
       toExtraHooks(workspace.hooks),
+      workspace.runner_kind,
     );
     return {
       run_id: runId,
@@ -827,11 +835,13 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
       );
       // a17.8: parallel runs in a worktree still belong to the parent
       // workspace, so they inherit its hooks.
+      // vk3.1: also inherit runner_kind from the parent workspace.
       const runId = runs.submit(
         worktreePath,
         null,
         runRequest,
         toExtraHooks(workspace.hooks),
+        workspace.runner_kind,
       );
       dispatched.push({
         run_id: runId,

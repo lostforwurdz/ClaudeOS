@@ -1,10 +1,12 @@
-export { runHarness, parseStream, buildArgs } from "./claude-code.js";
+export { runHarness, parseStream, buildArgs, ClaudeCodeRunner } from "./claude-code.js";
 export type {
   HarnessOptions,
   HarnessResult,
   PermissionDecision,
   PermissionRequestPayload,
 } from "./claude-code.js";
+export { getRunner, DEFAULT_RUNNER_KIND, UnknownRunnerError } from "./runner.js";
+export type { LLMRunner, RunnerKind } from "./runner.js";
 export {
   toClaudeMcpConfig,
   materializeMcpConfig,

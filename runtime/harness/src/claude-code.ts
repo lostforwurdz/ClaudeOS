@@ -82,6 +82,21 @@ export interface HarnessResult {
   exitCode: number;
 }
 
+// ----------------------------------------------------------------------------
+// vk3.1: LLMRunner class wrapper — delegates to runHarness without changing it
+// ----------------------------------------------------------------------------
+
+/**
+ * ClaudeCodeRunner implements LLMRunner by delegating to `runHarness`.
+ * Declared here (not in runner.ts) to avoid a circular import:
+ * runner.ts imports this class, so the class must live in claude-code.ts.
+ */
+export class ClaudeCodeRunner {
+  async run(request: RunRequest, options: HarnessOptions): Promise<HarnessResult> {
+    return runHarness(request, options);
+  }
+}
+
 const KILL_GRACE_MS = 5_000;
 
 export async function runHarness(

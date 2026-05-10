@@ -113,3 +113,54 @@ test("DELETE /workspaces/:id returns 404 for unknown workspace", async () => {
   });
   assert.equal(res.statusCode, 404);
 });
+
+// vk3.1: runner_kind tests
+test("POST /workspaces without runner_kind defaults to 'claude-code'", async () => {
+  app = await makeServer();
+  const res = await app.inject({
+    method: "POST",
+    url: "/workspaces",
+    payload: { name: "no-kind", dir: tmpDir },
+  });
+  assert.equal(res.statusCode, 200);
+  const ws = res.json() as Workspace;
+  assert.equal(ws.runner_kind, "claude-code");
+});
+
+test("POST /workspaces with runner_kind 'claude-code' persists and returns it", async () => {
+  app = await makeServer();
+  const res = await app.inject({
+    method: "POST",
+    url: "/workspaces",
+    payload: { name: "explicit-kind", dir: tmpDir, runner_kind: "claude-code" },
+  });
+  assert.equal(res.statusCode, 200);
+  const ws = res.json() as Workspace;
+  assert.equal(ws.runner_kind, "claude-code");
+});
+
+test("GET /workspaces/:id returns runner_kind field", async () => {
+  app = await makeServer();
+  const ws = await createWorkspace(app, "get-runner-kind");
+  const res = await app.inject({
+    method: "GET",
+    url: `/workspaces/${ws.id}`,
+  });
+  assert.equal(res.statusCode, 200);
+  const fetched = res.json() as Workspace;
+  assert.equal(fetched.runner_kind, "claude-code");
+});
+
+test("GET /workspaces returns runner_kind on all workspaces", async () => {
+  app = await makeServer();
+  await createWorkspace(app, "list-1");
+  await createWorkspace(app, "list-2");
+  const res = await app.inject({ method: "GET", url: "/workspaces" });
+  assert.equal(res.statusCode, 200);
+  const workspaces = res.json() as Workspace[];
+  assert.ok(workspaces.length >= 2);
+  for (const w of workspaces) {
+    assert.equal(typeof w.runner_kind, "string");
+    assert.equal(w.runner_kind, "claude-code");
+  }
+});

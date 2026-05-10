@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { runHarness } from "@claudeos/harness";
+import { getRunner } from "@claudeos/harness";
 import type {
   ExtraHookCommands,
   PermissionDecision,
@@ -59,6 +59,8 @@ export class RunManager {
     request: RunRequest,
     /** a17.8: per-workspace extra hooks materialized into the --settings file. */
     extraHooks?: ExtraHookCommands,
+    /** vk3.1: which LLM runner to use; defaults to "claude-code". */
+    runnerKind: string = "claude-code",
   ): string {
     const runId = randomUUID();
     const startedAt = new Date().toISOString();
@@ -73,7 +75,7 @@ export class RunManager {
     const abort = new AbortController();
     this.active.set(runId, abort);
 
-    void this.execute(runId, workspaceDir, claudeSessionId, request, abort.signal, extraHooks);
+    void this.execute(runId, workspaceDir, claudeSessionId, request, abort.signal, extraHooks, runnerKind);
     return runId;
   }
 
@@ -116,6 +118,7 @@ export class RunManager {
     request: RunRequest,
     signal: AbortSignal,
     extraHooks?: ExtraHookCommands,
+    runnerKind: string = "claude-code",
   ): Promise<void> {
     const insertEvent = this.db.prepare(
       `INSERT INTO run_events (run_id, sequence, event_json) VALUES (?, ?, ?)`,
@@ -130,7 +133,10 @@ export class RunManager {
     let lastEventType: RunEvent["type"] | null = null;
 
     try {
-      await runHarness(request, {
+      // vk3.1: dispatch through the runner registry rather than calling
+      // runHarness directly. Default kind "claude-code" is equivalent.
+      const runner = getRunner(runnerKind);
+      await runner.run(request, {
         workspaceDir,
         resumeClaudeSessionId: claudeSessionId,
         signal,
