@@ -8,6 +8,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type {
+  AgentCatalogResponse,
   CreateDomainBody,
   CreateSessionBody,
   CreateSkillBody,
@@ -25,6 +26,7 @@ import type {
   WorkspaceHooks,
 } from "@claudeos/runtime-client/contracts";
 
+import { ALIASES, listAgentsWithStatus } from "./agents.js";
 import { defaultDbPath, openDb } from "./db.js";
 import { EventBus } from "./event-bus.js";
 import { RunManager } from "./runs.js";
@@ -798,6 +800,13 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   // -- Templates ------------------------------------------------------------
 
   app.get("/templates", async () => listTemplates(templatesDir));
+
+  // -- Agents (a4x.1) -------------------------------------------------------
+
+  app.get("/agents", async (): Promise<AgentCatalogResponse> => ({
+    agents: listAgentsWithStatus(process.env),
+    aliases: ALIASES,
+  }));
 
   // -- Workspaces -----------------------------------------------------------
 

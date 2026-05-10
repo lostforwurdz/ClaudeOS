@@ -339,3 +339,50 @@ export interface LaunchSkillResponse {
    */
   resolved_workspace_id: string | null;
 }
+
+// ============================================================================
+// a4x.1: Agent catalog (static registry + GET /agents)
+// ============================================================================
+
+/**
+ * How the api-server dispatches a run to this agent.
+ *
+ * NOTE: This is intentionally broader than the harness-side RunnerKind
+ * ("claude-code" only as of vk3.1). The harness will gain "agent-pool"
+ * support when AgentPoolRunner lands in a4x.4; until then, the contracts
+ * carry the full future-facing union so downstream consumers (desktop,
+ * pipeline YAML) don't need a breaking change later.
+ */
+export type AgentRunnerKind = "claude-code" | "agent-pool";
+
+export type AgentAuthKind = "oauth" | "api_key";
+
+export type AgentCostTier = "subscription" | "free" | "paid";
+
+export type AgentAuthStatus = "connected" | "needs_setup";
+
+export interface AgentAuth {
+  kind: AgentAuthKind;
+  provider: string;
+}
+
+export interface Agent {
+  id: string;
+  name: string;
+  runner_kind: AgentRunnerKind;
+  model: string;
+  /** Required when runner_kind="agent-pool"; identifies the agent-pool worker. */
+  delegate_target?: string;
+  auth: AgentAuth;
+  cost_tier: AgentCostTier;
+  description: string;
+}
+
+export interface AgentWithStatus extends Agent {
+  status: AgentAuthStatus;
+}
+
+export interface AgentCatalogResponse {
+  agents: AgentWithStatus[];
+  aliases: Record<string, string>;
+}
