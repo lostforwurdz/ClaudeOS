@@ -22,6 +22,7 @@ const ws = (id: string, name = id): Workspace => ({
   dir: `/ws/${id}`,
   created_at: "2026-05-09T00:00:00Z",
   updated_at: "2026-05-09T00:00:00Z",
+  runner_kind: "claude-code",
 });
 
 const session = (id: string, workspaceId: string): Session => ({
