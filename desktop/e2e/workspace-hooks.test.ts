@@ -1,12 +1,14 @@
 /**
  * a17.8 / kobramaz-02g: workspace hooks editor E2E.
  *
- * Smoke-test the full path: open the dialog from the sidebar 🪝 button,
- * type a PostToolUse command, click Save, and verify the PATCH /workspaces/:id
- * round-trips and persists. Uses the same packaged-build harness as
- * lifecycle.test.ts.
+ * Drives the full UI: open the dialog from the sidebar 🪝 button, type a
+ * PostToolUse command, click Save, then re-open and click Clear. We use
+ * a single test (not two) because consecutive Electron launches from the
+ * same e2e file race the api-server's per-test boot — see the existing
+ * lifecycle.test.ts for the established workaround pattern.
  */
 
+import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -27,12 +29,26 @@ let tmpDir: string;
 let workspaceDir: string;
 let app: ElectronApplication | null = null;
 
-beforeEach(() => {
+beforeEach(async () => {
   if (!existsSync(MAIN_JS)) {
     throw new Error(
       `out/electron/main.js missing — run 'npm --prefix desktop run build' before E2E (saw ${MAIN_JS})`,
     );
   }
+  // Best-effort: kill any orphan api-server child still holding port 7878
+  // from a previous test's app.close(). When an orphan answers /health past
+  // the start of the next test, waitForApi passes against it, then it dies
+  // mid-test and the renderer + Node-side fetches see ERR_CONNECTION_REFUSED.
+  try {
+    execSync(
+      "lsof -ti:7878 | xargs --no-run-if-empty kill -9 2>/dev/null || true",
+      { stdio: "ignore" },
+    );
+  } catch {
+    // lsof unavailable / nothing to kill — ignore.
+  }
+  // Brief settle for the OS to release the port before the next bind.
+  await new Promise((r) => setTimeout(r, 500));
   tmpDir = mkdtempSync(join(tmpdir(), "claudeos-e2e-hooks-"));
   workspaceDir = join(tmpDir, "ws-target");
 });
@@ -68,146 +84,139 @@ async function launchApp(): Promise<{ application: ElectronApplication; page: Pa
   return { application, page };
 }
 
-test("workspace hooks: open editor, save PostToolUse, PATCH round-trips and persists", async () => {
+// Wait for the api-server to be reachable before driving UI actions. Per-test
+// app launches occasionally race the api-server boot — guard with a short poll.
+async function waitForApi(timeoutMs = 30_000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${API_PORT}/health`);
+      if (res.ok) return;
+    } catch {
+      // not yet
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`api-server did not become ready within ${timeoutMs}ms`);
+}
+
+async function pollUntil<T>(
+  predicate: () => Promise<T | null>,
+  timeoutMs = 5_000,
+  intervalMs = 100,
+): Promise<T> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const v = await predicate();
+    if (v !== null && v !== undefined && v !== false) return v;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`pollUntil timed out after ${timeoutMs}ms`);
+}
+
+async function readWorkspace(id: string): Promise<{
+  hooks: { post_tool_use?: string[]; stop?: string[] } | null;
+}> {
+  const res = await fetch(`http://127.0.0.1:${API_PORT}/workspaces/${id}`);
+  if (!res.ok) throw new Error(`GET /workspaces/${id} → ${res.status}`);
+  return res.json() as Promise<{
+    hooks: { post_tool_use?: string[]; stop?: string[] } | null;
+  }>;
+}
+
+test("workspace hooks: editor saves PostToolUse, then Clear button removes them", async () => {
   const { application, page } = await launchApp();
   app = application;
+  await waitForApi();
 
-  // 1. Create a workspace through the UI (same pattern as lifecycle.test.ts).
-  const newButton = page.locator('button[title^="Create new workspace"]');
-  await newButton.waitFor({ state: "visible", timeout: 30_000 });
-  await newButton.click();
-  await page.fill('input[placeholder="my-project"]', "hooks-e2e-ws");
-  await page.fill('input[placeholder="/home/me/projects/my-project"]', workspaceDir);
-  const createWait = page.waitForResponse(
-    (res) => res.url().endsWith("/workspaces") && res.request().method() === "POST",
-    { timeout: 10_000 },
-  );
-  await page.click('button:has-text("Create")');
-  const createRes = await createWait;
-  assert.equal(createRes.status(), 200);
+  // Capture renderer console + page errors so a hang has a useful tail.
+  const consoleEvents: string[] = [];
+  page.on("console", (msg) => consoleEvents.push(`[${msg.type()}] ${msg.text()}`));
+  page.on("pageerror", (err) => consoleEvents.push(`[pageerror] ${err.message}`));
+
+  // 1. Create the workspace via the api-server directly. The UI create
+  // dialog is exercised by lifecycle.test.ts; bypassing it here keeps this
+  // test focused on the hooks editor and avoids racing the boot sequence
+  // of the previous test's app shutdown.
+  const createRes = await fetch(`http://127.0.0.1:${API_PORT}/workspaces`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "hooks-e2e-ws", dir: workspaceDir }),
+  });
+  assert.equal(createRes.status, 200);
   const createdWs = (await createRes.json()) as { id: string; hooks: unknown };
   assert.equal(createdWs.hooks ?? null, null, "fresh workspace must have no hooks");
   const workspaceId = createdWs.id;
 
+  // Reload so the renderer's GET /workspaces picks up the row we just
+  // created out-of-band. Without this the sidebar would still show the
+  // pre-create empty state.
+  await page.reload();
+  await page
+    .getByText("hooks-e2e-ws", { exact: true })
+    .first()
+    .waitFor({ state: "visible", timeout: 30_000 });
+
   // 2. Hover the row to reveal the 🪝 hooks button, then click it.
   await page.getByText("hooks-e2e-ws", { exact: true }).first().hover();
-  const hooksButton = page
-    .locator('button[title^="Edit workspace hooks"]')
-    .first();
+  const hooksButton = page.locator('button[title^="Edit workspace hooks"]').first();
   await hooksButton.waitFor({ state: "visible", timeout: 5_000 });
   await hooksButton.click();
 
-  // 3. Dialog should render with both empty textareas + the workspace name.
+  // 3. Dialog should render with both empty textareas.
   await page
     .getByText("Workspace hooks", { exact: true })
     .waitFor({ state: "visible", timeout: 5_000 });
-  // The PostToolUse textarea is identified by its placeholder.
   const postToolUseInput = page.locator(
     'textarea[placeholder="npm run lint --silent"]',
   );
   await postToolUseInput.waitFor({ state: "visible", timeout: 5_000 });
 
-  // 4. Fill PostToolUse with a multi-line value (one command per line) and Save.
+  // 4. Fill PostToolUse with multi-line text and Save. We verify by polling
+  // the api-server directly rather than waitForResponse — the latter would
+  // hide a CORS preflight failure as a generic timeout, while polling shows
+  // exactly whether the renderer's PATCH actually changed server state.
   await postToolUseInput.fill("echo first\necho second");
-  const patchWait = page.waitForResponse(
-    (res) =>
-      res.url().includes(`/workspaces/${workspaceId}`) &&
-      res.request().method() === "PATCH",
-    { timeout: 10_000 },
-  );
   await page.click('button:has-text("Save")');
-  const patchRes = await patchWait;
-  assert.equal(patchRes.status(), 200);
-  const updated = (await patchRes.json()) as {
-    id: string;
-    hooks: { post_tool_use?: string[]; stop?: string[] } | null;
-  };
-  assert.deepEqual(
-    updated.hooks?.post_tool_use,
-    ["echo first", "echo second"],
-    "saved hooks must round-trip in PATCH response",
-  );
-  assert.equal(
-    updated.hooks?.stop,
-    undefined,
-    "Stop must remain absent when not edited",
-  );
 
-  // 5. Dialog closes after Save (HooksDialog calls onSaved → setEditingHooksWs(null)).
+  try {
+    await pollUntil(async () => {
+      const ws = await readWorkspace(workspaceId);
+      return ws.hooks?.post_tool_use?.length === 2 ? ws : null;
+    }, 10_000);
+  } catch (err) {
+    throw new Error(
+      `Save did not persist hooks within 10s.\nconsole tail:\n${consoleEvents.slice(-20).join("\n")}\nunderlying: ${(err as Error).message}`,
+    );
+  }
+  const saved = await readWorkspace(workspaceId);
+  assert.deepEqual(saved.hooks?.post_tool_use, ["echo first", "echo second"]);
+  assert.equal(saved.hooks?.stop, undefined, "Stop must remain absent when not edited");
+
+  // 5. Dialog closes after a successful Save.
   await page
     .getByText("Workspace hooks", { exact: true })
     .waitFor({ state: "hidden", timeout: 5_000 });
 
-  // 6. Persistence check: GET the workspace directly and confirm the hooks
-  // survived. This is the migration-relevant guarantee — the row is real,
-  // not just dialog state.
-  const persisted = await page.evaluate(async (id) => {
-    const res = await fetch(`http://127.0.0.1:7878/workspaces/${id}`);
-    return res.json();
-  }, workspaceId);
-  assert.deepEqual(
-    (persisted as { hooks: { post_tool_use?: string[] } }).hooks?.post_tool_use,
-    ["echo first", "echo second"],
-  );
-});
-
-test("workspace hooks: Clear button removes hooks via PATCH {hooks: null}", async () => {
-  const { application, page } = await launchApp();
-  app = application;
-
-  // Seed via API directly so the test focuses on the Clear path.
-  const newButton = page.locator('button[title^="Create new workspace"]');
-  await newButton.waitFor({ state: "visible", timeout: 30_000 });
-  await newButton.click();
-  await page.fill('input[placeholder="my-project"]', "hooks-clear-ws");
-  await page.fill('input[placeholder="/home/me/projects/my-project"]', workspaceDir);
-  const createWait = page.waitForResponse(
-    (res) => res.url().endsWith("/workspaces") && res.request().method() === "POST",
-    { timeout: 10_000 },
-  );
-  await page.click('button:has-text("Create")');
-  const createRes = await createWait;
-  const createdWs = (await createRes.json()) as { id: string };
-  const workspaceId = createdWs.id;
-
-  // Pre-seed hooks via API so Clear has something to remove. The renderer
-  // owns the workspace list, so we must reload its view via the UI: open
-  // and close the hooks dialog after seeding so the saved row is re-fetched.
-  await page.evaluate(
-    async ({ id }) => {
-      await fetch(`http://127.0.0.1:7878/workspaces/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hooks: { post_tool_use: ["seeded"] } }),
-      });
-    },
-    { id: workspaceId },
-  );
-  // Force the renderer to refetch by reloading. Simpler than wiring a manual
-  // refresh — the localStorage userDataDir keeps the workspace list source-of-truth.
-  await page.reload();
-  await page
-    .getByText("hooks-clear-ws", { exact: true })
-    .first()
-    .waitFor({ state: "visible", timeout: 30_000 });
-
-  // Open hooks dialog.
-  await page.getByText("hooks-clear-ws", { exact: true }).first().hover();
-  await page.locator('button[title^="Edit workspace hooks"]').first().click();
+  // 6. Re-open the editor and click Clear. The 🪝 button should be tinted
+  // (workspace.hooks is non-null) so Clear is enabled.
+  await page.getByText("hooks-e2e-ws", { exact: true }).first().hover();
+  await hooksButton.click();
   await page
     .getByText("Workspace hooks", { exact: true })
     .waitFor({ state: "visible", timeout: 5_000 });
-
-  // Click Clear (visible because workspace.hooks is non-null after seeding).
-  const patchWait = page.waitForResponse(
-    (res) =>
-      res.url().includes(`/workspaces/${workspaceId}`) &&
-      res.request().method() === "PATCH",
-    { timeout: 10_000 },
-  );
   await page.click('button:has-text("Clear")');
-  const patchRes = await patchWait;
-  assert.equal(patchRes.status(), 200);
-  const updated = (await patchRes.json()) as { hooks: unknown };
-  assert.equal(updated.hooks ?? null, null, "Clear must drop hooks back to null");
+
+  try {
+    await pollUntil(async () => {
+      const ws = await readWorkspace(workspaceId);
+      return ws.hooks === null || ws.hooks === undefined ? ws : null;
+    }, 10_000);
+  } catch (err) {
+    throw new Error(
+      `Clear did not drop hooks within 10s.\nconsole tail:\n${consoleEvents.slice(-20).join("\n")}\nunderlying: ${(err as Error).message}`,
+    );
+  }
+  const cleared = await readWorkspace(workspaceId);
+  assert.equal(cleared.hooks ?? null, null);
 });
