@@ -16,6 +16,26 @@ export interface Workspace {
   dir: string;
   created_at: string;
   updated_at: string;
+  /**
+   * a17.8: per-workspace hook commands. Materialized into the per-run
+   * --settings file alongside ClaudeOS's permission hook so they fire
+   * during runs in this workspace. `null` when the workspace defers
+   * entirely to user/project settings.
+   */
+  hooks?: WorkspaceHooks | null;
+}
+
+export interface WorkspaceHooks {
+  /**
+   * Commands run after every successful tool call. Useful for
+   * lint-on-save, format, type-check.
+   */
+  post_tool_use?: string[];
+  /**
+   * Commands run when the agent reports the run is complete. Useful for
+   * test-gates that block premature "done" claims.
+   */
+  stop?: string[];
 }
 
 export interface Session {
