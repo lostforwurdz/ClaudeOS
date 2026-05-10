@@ -279,6 +279,21 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const handleOpenSettings = useCallback(() => setSettingsOpen(true), []);
 
+  // a17.8: per-workspace hooks editor. Modal driven by `editingHooksWs`;
+  // null hides it. On save we PATCH /workspaces/:id and refresh both the
+  // sidebar list and the open-tab slot via WORKSPACE_RENAMED (the action
+  // is a generic "workspace metadata changed" — name was just the first
+  // such field).
+  const [editingHooksWs, setEditingHooksWs] = useState<Workspace | null>(null);
+  const handleEditWorkspaceHooks = useCallback((ws: Workspace) => {
+    setEditingHooksWs(ws);
+  }, []);
+  const handleHooksSaved = useCallback((updated: Workspace) => {
+    setWorkspaces((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
+    dispatch({ type: "WORKSPACE_RENAMED", workspace: updated });
+    setEditingHooksWs(null);
+  }, []);
+
   // bsky-1: Mission Control mode swaps the main pane to a cross-workspace
   // dashboard of every active run, regardless of which workspace tab is
   // active. The state lives at App level since it's not workspace-scoped.
@@ -548,6 +563,7 @@ export function App() {
         onClose={closeWorkspaceTab}
         onNew={handleCreateWorkspace}
         onRename={(ws) => void handleRenameWorkspace(ws.id, ws.name)}
+        onEditHooks={handleEditWorkspaceHooks}
         onDelete={(ws) => void handleDeleteWorkspace(ws.id, ws.name)}
         onOpenSettings={handleOpenSettings}
       />
@@ -565,6 +581,13 @@ export function App() {
             writePref(PREF_THEME, t);
           }}
           onClose={() => setSettingsOpen(false)}
+        />
+      )}
+      {editingHooksWs && (
+        <HooksDialog
+          workspace={editingHooksWs}
+          onSaved={handleHooksSaved}
+          onClose={() => setEditingHooksWs(null)}
         />
       )}
       {fanOutPromptOpen && activeSlot && (
@@ -674,6 +697,7 @@ interface SidebarProps {
   onClose: (workspaceId: string) => void;
   onNew: () => void;
   onRename: (ws: Workspace) => void;
+  onEditHooks: (ws: Workspace) => void;
   onDelete: (ws: Workspace) => void;
   onOpenSettings: () => void;
 }
@@ -688,6 +712,7 @@ function Sidebar({
   onClose,
   onNew,
   onRename,
+  onEditHooks,
   onDelete,
   onOpenSettings,
 }: SidebarProps) {
@@ -746,6 +771,7 @@ function Sidebar({
               onSelect={() => onSelect(slot.workspace)}
               onClose={() => onClose(slot.workspace.id)}
               onRename={() => onRename(slot.workspace)}
+              onEditHooks={() => onEditHooks(slot.workspace)}
               onDelete={() => onDelete(slot.workspace)}
             />
           ))}
@@ -767,6 +793,7 @@ function Sidebar({
             active={activeId === ws.id}
             onSelect={() => onSelect(ws)}
             onRename={() => onRename(ws)}
+            onEditHooks={() => onEditHooks(ws)}
             onDelete={() => onDelete(ws)}
           />
         ))}
@@ -782,6 +809,7 @@ interface SidebarRowProps {
   onSelect: () => void;
   onClose?: () => void;
   onRename: () => void;
+  onEditHooks: () => void;
   onDelete: () => void;
 }
 
@@ -792,6 +820,7 @@ function SidebarRow({
   onSelect,
   onClose,
   onRename,
+  onEditHooks,
   onDelete,
 }: SidebarRowProps) {
   const [hovered, setHovered] = useState(false);
@@ -849,6 +878,25 @@ function SidebarRow({
             title="Rename workspace"
           >
             ✎
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onEditHooks();
+            }}
+            style={{
+              ...miniBtn,
+              opacity: workspace.hooks ? 0.85 : 0.5,
+              fontSize: 12,
+              color: workspace.hooks ? "var(--accent)" : undefined,
+            }}
+            title={
+              workspace.hooks
+                ? "Edit workspace hooks (custom hooks active)"
+                : "Edit workspace hooks (PostToolUse / Stop)"
+            }
+          >
+            🪝
           </button>
           <button
             onClick={(e) => {
@@ -2392,6 +2440,196 @@ const settingsBtn: React.CSSProperties = {
   fontSize: 12,
   cursor: "pointer",
 };
+
+// a17.8 / kobramaz-02g: per-workspace hooks editor. Two textareas, one
+// command per line, mapping to the api-server's WorkspaceHooks shape:
+//   post_tool_use[]  → fires after every successful tool call
+//   stop[]           → fires when the agent claims the run is done
+//
+// The ClaudeOS PreToolUse permission hook is always wired by the harness
+// regardless of these — workspace hooks are *additive* extras.
+function HooksDialog({
+  workspace,
+  onSaved,
+  onClose,
+}: {
+  workspace: Workspace;
+  onSaved: (updated: Workspace) => void;
+  onClose: () => void;
+}) {
+  const initialPost = (workspace.hooks?.post_tool_use ?? []).join("\n");
+  const initialStop = (workspace.hooks?.stop ?? []).join("\n");
+  const [postToolUse, setPostToolUse] = useState(initialPost);
+  const [stop, setStop] = useState(initialStop);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const splitLines = (s: string): string[] =>
+    s
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
+  const handleSave = async () => {
+    const post = splitLines(postToolUse);
+    const stp = splitLines(stop);
+    setBusy(true);
+    setError(null);
+    try {
+      const updated =
+        post.length === 0 && stp.length === 0
+          ? // Both empty → clear hooks entirely so the row reads back as null.
+            await api.setWorkspaceHooks(workspace.id, null)
+          : await api.setWorkspaceHooks(workspace.id, {
+              ...(post.length > 0 ? { post_tool_use: post } : {}),
+              ...(stp.length > 0 ? { stop: stp } : {}),
+            });
+      onSaved(updated);
+    } catch (e) {
+      setError(`Save failed: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleClear = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await api.setWorkspaceHooks(workspace.id, null);
+      onSaved(updated);
+    } catch (e) {
+      setError(`Clear failed: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const textarea: React.CSSProperties = {
+    width: "100%",
+    minHeight: 70,
+    padding: 6,
+    background: "var(--raised)",
+    color: "var(--text)",
+    border: "1px solid var(--borderStrong)",
+    borderRadius: 4,
+    fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, monospace)",
+    fontSize: 12,
+    resize: "vertical",
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "var(--backdrop)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--modalBg)",
+          border: "1px solid var(--borderStrong)",
+          borderRadius: 6,
+          padding: 18,
+          width: 520,
+          fontSize: 12,
+          lineHeight: 1.5,
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+          Workspace hooks
+        </div>
+        <div style={{ opacity: 0.5, fontSize: 11, marginBottom: 14 }}>
+          {workspace.name} — one shell command per line. Materialized into
+          this workspace's per-run settings file alongside the ClaudeOS
+          permission hook.
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+            PostToolUse
+          </div>
+          <div style={{ opacity: 0.5, fontSize: 11, marginBottom: 6 }}>
+            Runs after every successful tool call. Useful for lint-on-save,
+            auto-format, type-check.
+          </div>
+          <textarea
+            value={postToolUse}
+            onChange={(e) => setPostToolUse(e.target.value)}
+            placeholder="npm run lint --silent"
+            spellCheck={false}
+            style={textarea}
+          />
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+            Stop
+          </div>
+          <div style={{ opacity: 0.5, fontSize: 11, marginBottom: 6 }}>
+            Runs when the agent reports the run is complete. Useful as a
+            test-gate that blocks premature "done" claims.
+          </div>
+          <textarea
+            value={stop}
+            onChange={(e) => setStop(e.target.value)}
+            placeholder="npm test -- --run"
+            spellCheck={false}
+            style={textarea}
+          />
+        </div>
+
+        {error && (
+          <div style={{ color: "var(--error)", marginBottom: 10, fontSize: 11 }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+          <button
+            onClick={() => void handleClear()}
+            disabled={busy || !workspace.hooks}
+            style={{
+              ...settingsBtn,
+              color: "var(--errorMuted)",
+              opacity: !workspace.hooks ? 0.4 : 1,
+            }}
+            title="Remove all hooks for this workspace"
+          >
+            Clear
+          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onClose} disabled={busy} style={settingsBtn}>
+              Cancel
+            </button>
+            <button
+              onClick={() => void handleSave()}
+              disabled={busy}
+              style={{ ...settingsBtn, background: "var(--raisedAlt)" }}
+            >
+              {busy ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function formatTimestamp(iso: string): string {
   const d = new Date(iso);

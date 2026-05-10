@@ -101,6 +101,21 @@ export const api = {
       }),
     );
   },
+  // a17.8: write or clear per-workspace hooks. Pass `null` to clear; pass
+  // an object with the array(s) you want to set. Empty arrays are treated
+  // as a clear by the api-server's setHooks.
+  async setWorkspaceHooks(
+    id: string,
+    hooks: { post_tool_use?: string[]; stop?: string[] } | null,
+  ): Promise<Workspace> {
+    return jsonOrThrow(
+      await fetch(`${API_BASE}/workspaces/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hooks }),
+      }),
+    );
+  },
   async deleteWorkspace(id: string): Promise<void> {
     const res = await fetch(`${API_BASE}/workspaces/${id}`, { method: "DELETE" });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);

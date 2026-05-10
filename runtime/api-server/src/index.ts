@@ -109,6 +109,26 @@ interface Repo {
   listSessions(workspaceId: string, opts: { limit: number; before?: string }): Session[];
 }
 
+// a17.8: translate the public Workspace.hooks shape into the harness's
+// ExtraHookCommands shape. The two contracts diverge on capitalization
+// (snake_case in the SDK contract, PascalCase from Claude Code's settings
+// schema). Returns undefined when there's nothing to forward — the
+// harness uses `undefined` as the "no extras" signal so the per-run
+// settings file stays minimal.
+export function toExtraHooks(
+  hooks: WorkspaceHooks | null | undefined,
+): { PostToolUse?: string[]; Stop?: string[] } | undefined {
+  if (!hooks) return undefined;
+  const out: { PostToolUse?: string[]; Stop?: string[] } = {};
+  if (hooks.post_tool_use && hooks.post_tool_use.length > 0) {
+    out.PostToolUse = hooks.post_tool_use;
+  }
+  if (hooks.stop && hooks.stop.length > 0) {
+    out.Stop = hooks.stop;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 // a17.8: parse the hooks_json column into the public Workspace shape.
 // Defensive — if the row was migrated mid-write or someone hand-edited
 // the DB, fall back to null rather than throwing.
@@ -688,7 +708,12 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
       return { error: "session does not belong to workspace" };
     }
 
-    const runId = runs.submit(workspace.dir, session.claude_session_id, runRequest);
+    const runId = runs.submit(
+      workspace.dir,
+      session.claude_session_id,
+      runRequest,
+      toExtraHooks(workspace.hooks),
+    );
     return {
       run_id: runId,
       session_id: runRequest.session_id,
@@ -800,7 +825,14 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
         ),
         opts.augmentSessionAuth,
       );
-      const runId = runs.submit(worktreePath, null, runRequest);
+      // a17.8: parallel runs in a worktree still belong to the parent
+      // workspace, so they inherit its hooks.
+      const runId = runs.submit(
+        worktreePath,
+        null,
+        runRequest,
+        toExtraHooks(workspace.hooks),
+      );
       dispatched.push({
         run_id: runId,
         session_id: session.id,
