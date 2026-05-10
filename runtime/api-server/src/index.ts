@@ -15,6 +15,7 @@ import type {
   Session,
   SubmitRunResponse,
   Workspace,
+  WorkspaceHooks,
 } from "@claudeos/runtime-client/contracts";
 
 import { defaultDbPath, openDb } from "./db.js";
@@ -46,9 +47,22 @@ const CreateWorkspaceSchema = z.object({
   template: z.string().min(1).optional(),
 });
 
-const UpdateWorkspaceSchema = z.object({
-  name: z.string().min(1),
+// a17.8: PATCH accepts either a rename, a hooks update, or both. When the
+// caller wants to clear hooks they pass `hooks: null` (the schema allows
+// it explicitly so undefined means "leave unchanged").
+const HooksSchema = z.object({
+  post_tool_use: z.array(z.string().min(1)).optional(),
+  stop: z.array(z.string().min(1)).optional(),
 });
+const UpdateWorkspaceSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    hooks: z.union([HooksSchema, z.null()]).optional(),
+  })
+  .refine(
+    (v) => v.name !== undefined || v.hooks !== undefined,
+    "PATCH body must include at least one of: name, hooks",
+  );
 
 const CreateSessionSchema = z.object({
   workspace_id: z.string().min(1),
@@ -87,10 +101,38 @@ interface Repo {
   listWorkspaces(): Workspace[];
   getWorkspace(id: string): Workspace | null;
   renameWorkspace(id: string, name: string): Workspace | null;
+  /** a17.8: persist (or clear with `null`) per-workspace hook commands. */
+  setHooks(id: string, hooks: WorkspaceHooks | null): Workspace | null;
   deleteWorkspace(id: string): boolean;
   createSession(body: CreateSessionBody): Session;
   getSession(id: string): Session | null;
   listSessions(workspaceId: string, opts: { limit: number; before?: string }): Session[];
+}
+
+// a17.8: parse the hooks_json column into the public Workspace shape.
+// Defensive — if the row was migrated mid-write or someone hand-edited
+// the DB, fall back to null rather than throwing.
+function parseWorkspaceHooks(raw: unknown): WorkspaceHooks | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<WorkspaceHooks>;
+    return {
+      ...(Array.isArray(parsed.post_tool_use)
+        ? {
+            post_tool_use: parsed.post_tool_use.filter(
+              (s): s is string => typeof s === "string",
+            ),
+          }
+        : {}),
+      ...(Array.isArray(parsed.stop)
+        ? {
+            stop: parsed.stop.filter((s): s is string => typeof s === "string"),
+          }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function createRepo(db: DatabaseType): Repo {
@@ -103,28 +145,74 @@ function createRepo(db: DatabaseType): Repo {
         dir: body.dir,
         created_at: now,
         updated_at: now,
+        hooks: null,
       };
       db.prepare(
-        `INSERT INTO workspaces (id, name, dir, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO workspaces (id, name, dir, created_at, updated_at, hooks_json)
+         VALUES (?, ?, ?, ?, ?, NULL)`,
       ).run(ws.id, ws.name, ws.dir, ws.created_at, ws.updated_at);
       return ws;
     },
     listWorkspaces() {
-      return db
-        .prepare(`SELECT id, name, dir, created_at, updated_at FROM workspaces ORDER BY created_at DESC`)
-        .all() as Workspace[];
+      const rows = db
+        .prepare(
+          `SELECT id, name, dir, created_at, updated_at, hooks_json
+             FROM workspaces ORDER BY created_at DESC`,
+        )
+        .all() as Array<Workspace & { hooks_json: string | null }>;
+      return rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        dir: r.dir,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+        hooks: parseWorkspaceHooks(r.hooks_json),
+      }));
     },
     getWorkspace(id) {
       const row = db
-        .prepare(`SELECT id, name, dir, created_at, updated_at FROM workspaces WHERE id = ?`)
-        .get(id) as Workspace | undefined;
-      return row ?? null;
+        .prepare(
+          `SELECT id, name, dir, created_at, updated_at, hooks_json
+             FROM workspaces WHERE id = ?`,
+        )
+        .get(id) as
+        | (Workspace & { hooks_json: string | null })
+        | undefined;
+      if (!row) return null;
+      return {
+        id: row.id,
+        name: row.name,
+        dir: row.dir,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        hooks: parseWorkspaceHooks(row.hooks_json),
+      };
     },
     renameWorkspace(id, name) {
       const now = new Date().toISOString();
       const result = db
         .prepare(`UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?`)
         .run(name, now, id);
+      if (result.changes === 0) return null;
+      return this.getWorkspace(id);
+    },
+    setHooks(id, hooks) {
+      const now = new Date().toISOString();
+      // Strip empty arrays so the persisted JSON stays minimal and the UI
+      // can treat absence as "use defaults" without parsing edge cases.
+      const cleaned: WorkspaceHooks | null = hooks
+        ? {
+            ...(hooks.post_tool_use && hooks.post_tool_use.length > 0
+              ? { post_tool_use: hooks.post_tool_use }
+              : {}),
+            ...(hooks.stop && hooks.stop.length > 0 ? { stop: hooks.stop } : {}),
+          }
+        : null;
+      const json =
+        cleaned && Object.keys(cleaned).length > 0 ? JSON.stringify(cleaned) : null;
+      const result = db
+        .prepare(`UPDATE workspaces SET hooks_json = ?, updated_at = ? WHERE id = ?`)
+        .run(json, now, id);
       if (result.changes === 0) return null;
       return this.getWorkspace(id);
     },
@@ -432,9 +520,17 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
     async (request, reply) => {
       const parsed = UpdateWorkspaceSchema.safeParse(request.body);
       if (!parsed.success) return reply.code(400).send({ error: parsed.error.format() });
-      const updated = repo.renameWorkspace(request.params.id, parsed.data.name);
-      if (!updated) return reply.code(404).send({ error: "workspace not found" });
-      return updated;
+      let result = repo.getWorkspace(request.params.id);
+      if (!result) return reply.code(404).send({ error: "workspace not found" });
+      if (parsed.data.name !== undefined) {
+        result = repo.renameWorkspace(request.params.id, parsed.data.name);
+        if (!result) return reply.code(404).send({ error: "workspace not found" });
+      }
+      if (parsed.data.hooks !== undefined) {
+        result = repo.setHooks(request.params.id, parsed.data.hooks);
+        if (!result) return reply.code(404).send({ error: "workspace not found" });
+      }
+      return result;
     },
   );
 

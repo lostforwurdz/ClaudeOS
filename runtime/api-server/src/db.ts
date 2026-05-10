@@ -9,7 +9,11 @@ CREATE TABLE IF NOT EXISTS workspaces (
   name TEXT NOT NULL,
   dir TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  -- a17.8: per-workspace hooks override (PostToolUse / Stop / etc.).
+  -- JSON-encoded WorkspaceHooks; NULL when the workspace defers entirely
+  -- to user/project settings.
+  hooks_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -52,5 +56,14 @@ export function openDb(path: string = defaultDbPath()): DatabaseType {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  // a17.8: tiny migration. SCHEMA's CREATE TABLE adds hooks_json on fresh
+  // DBs but not on existing ones — ALTER TABLE if the column is absent.
+  // Idempotent; second runs see the column and skip.
+  const cols = db
+    .prepare(`PRAGMA table_info(workspaces)`)
+    .all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "hooks_json")) {
+    db.exec(`ALTER TABLE workspaces ADD COLUMN hooks_json TEXT`);
+  }
   return db;
 }

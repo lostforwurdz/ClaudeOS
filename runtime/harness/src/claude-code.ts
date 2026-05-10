@@ -19,6 +19,7 @@ import { materializeMcpConfig, type MaterializedMcpConfig } from "./mcp-config.j
 import {
   buildPermissionHookConfig,
   persistPermissionDecision,
+  type ExtraHookCommands,
   type PermissionHookConfig,
 } from "./permission-hook-config.js";
 import { buildStreamUserMessage, needsStreamInput } from "./stream-input.js";
@@ -66,6 +67,12 @@ export interface HarnessOptions {
   awaitPermissionDecision?: (
     request: PermissionRequestPayload,
   ) => Promise<PermissionDecision>;
+  /**
+   * a17.8: per-workspace extra hooks materialized into the same --settings
+   * file alongside the permission hook. Only used when permissionHookBin is
+   * set; without it ClaudeOS doesn't write a settings file at all.
+   */
+  extraHooks?: ExtraHookCommands;
 }
 
 export interface HarnessResult {
@@ -97,6 +104,7 @@ export async function runHarness(
       ? buildPermissionHookConfig({
           hookBinaryPath: options.permissionHookBin,
           runId: options.runId,
+          ...(options.extraHooks ? { extraHooks: options.extraHooks } : {}),
         })
       : null;
 

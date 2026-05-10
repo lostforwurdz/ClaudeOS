@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { runHarness } from "@claudeos/harness";
 import type {
+  ExtraHookCommands,
   PermissionDecision,
   PermissionRequestPayload,
 } from "@claudeos/harness";
@@ -52,7 +53,13 @@ export class RunManager {
    * synchronously with the run id. Events stream to the bus and the DB
    * concurrently.
    */
-  submit(workspaceDir: string, claudeSessionId: string | null, request: RunRequest): string {
+  submit(
+    workspaceDir: string,
+    claudeSessionId: string | null,
+    request: RunRequest,
+    /** a17.8: per-workspace extra hooks materialized into the --settings file. */
+    extraHooks?: ExtraHookCommands,
+  ): string {
     const runId = randomUUID();
     const startedAt = new Date().toISOString();
 
@@ -66,7 +73,7 @@ export class RunManager {
     const abort = new AbortController();
     this.active.set(runId, abort);
 
-    void this.execute(runId, workspaceDir, claudeSessionId, request, abort.signal);
+    void this.execute(runId, workspaceDir, claudeSessionId, request, abort.signal, extraHooks);
     return runId;
   }
 
@@ -108,6 +115,7 @@ export class RunManager {
     claudeSessionId: string | null,
     request: RunRequest,
     signal: AbortSignal,
+    extraHooks?: ExtraHookCommands,
   ): Promise<void> {
     const insertEvent = this.db.prepare(
       `INSERT INTO run_events (run_id, sequence, event_json) VALUES (?, ?, ?)`,
@@ -128,6 +136,7 @@ export class RunManager {
         signal,
         runId,
         permissionHookBin: this.options.permissionHookBin ?? undefined,
+        ...(extraHooks ? { extraHooks } : {}),
         awaitPermissionDecision: (payload) =>
           new Promise<PermissionDecision>((resolve, reject) => {
             // The matching cancel/respond paths drain this slot.

@@ -18,6 +18,7 @@ export {
   buildStreamUserMessage,
   needsStreamInput,
 } from "./stream-input.js";
+export type { ExtraHookCommands } from "./permission-hook-config.js";
 export type {
   AttachmentReader,
   StreamUserMessage,

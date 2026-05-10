@@ -22,6 +22,13 @@ export interface PermissionHookConfig {
   cleanup(): void;
 }
 
+export interface ExtraHookCommands {
+  /** Commands to run after every successful tool call. */
+  PostToolUse?: string[];
+  /** Commands to run when the agent claims the run is complete. */
+  Stop?: string[];
+}
+
 export interface BuildPermissionHookConfigInput {
   /** Absolute path to the bundled hook launcher (`packages/claude-cli/permission-hook.js`). */
   hookBinaryPath: string;
@@ -29,6 +36,12 @@ export interface BuildPermissionHookConfigInput {
   runId: string;
   /** Optional override for testing; defaults to `os.tmpdir()`. */
   rootDir?: string;
+  /**
+   * a17.8: per-workspace extra hooks the api-server materializes alongside
+   * the permission hook. Each event maps to a list of shell commands; each
+   * command runs in its own hooks entry with matcher: "*".
+   */
+  extraHooks?: ExtraHookCommands;
 }
 
 /**
@@ -56,21 +69,37 @@ export function buildPermissionHookConfig(
   mkdirSync(scratchDir, { recursive: true });
   mkdirSync(join(scratchDir, input.runId), { recursive: true });
 
-  const settings = {
-    hooks: {
-      PreToolUse: [
-        {
-          matcher: "*",
-          hooks: [
-            {
-              type: "command",
-              command: `node ${shellQuote(input.hookBinaryPath)}`,
-            },
-          ],
-        },
-      ],
-    },
+  // a17.8: build the per-event arrays so PreToolUse always carries our
+  // permission hook, and any operator-supplied PostToolUse/Stop commands
+  // are added as additional matcher: "*" entries. Claude Code merges
+  // arrays across settings sources, so user/project hooks still fire.
+  const hooks: Record<
+    string,
+    Array<{ matcher: string; hooks: Array<{ type: "command"; command: string }> }>
+  > = {
+    PreToolUse: [
+      {
+        matcher: "*",
+        hooks: [
+          {
+            type: "command",
+            command: `node ${shellQuote(input.hookBinaryPath)}`,
+          },
+        ],
+      },
+    ],
   };
+  const addExtra = (event: "PostToolUse" | "Stop", cmds: string[] | undefined) => {
+    if (!cmds || cmds.length === 0) return;
+    hooks[event] = cmds.map((command) => ({
+      matcher: "*",
+      hooks: [{ type: "command" as const, command }],
+    }));
+  };
+  addExtra("PostToolUse", input.extraHooks?.PostToolUse);
+  addExtra("Stop", input.extraHooks?.Stop);
+
+  const settings = { hooks };
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 });
 
   return {
