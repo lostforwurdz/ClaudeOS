@@ -102,6 +102,121 @@ test("persistPermissionDecision creates decisions.json keyed by tool_use_id", ()
   }
 });
 
+// ----------------------------------------------------------------------------
+// a17.8 — extraHooks materialization (workspace-scoped PostToolUse / Stop).
+// The PreToolUse permission hook must keep firing alongside whatever extras
+// the workspace defines.
+// ----------------------------------------------------------------------------
+
+test("buildPermissionHookConfig leaves PostToolUse/Stop unset when extraHooks is undefined", () => {
+  const handle = buildPermissionHookConfig({
+    hookBinaryPath: "/x.js",
+    runId: "run-extra-none",
+    rootDir: root,
+  });
+  try {
+    const json = JSON.parse(readFileSync(handle.settingsPath, "utf8"));
+    assert.equal(
+      json.hooks.PostToolUse,
+      undefined,
+      "PostToolUse must be absent when no extras supplied",
+    );
+    assert.equal(json.hooks.Stop, undefined);
+    assert.ok(json.hooks.PreToolUse, "PreToolUse must always remain");
+  } finally {
+    handle.cleanup();
+  }
+});
+
+test("buildPermissionHookConfig with extraHooks.PostToolUse adds one entry per command", () => {
+  const handle = buildPermissionHookConfig({
+    hookBinaryPath: "/x.js",
+    runId: "run-extra-ptu",
+    rootDir: root,
+    extraHooks: { PostToolUse: ["echo done", "npm run lint"] },
+  });
+  try {
+    const json = JSON.parse(readFileSync(handle.settingsPath, "utf8"));
+    assert.equal(json.hooks.PostToolUse.length, 2);
+    assert.deepEqual(json.hooks.PostToolUse[0], {
+      matcher: "*",
+      hooks: [{ type: "command", command: "echo done" }],
+    });
+    assert.deepEqual(json.hooks.PostToolUse[1], {
+      matcher: "*",
+      hooks: [{ type: "command", command: "npm run lint" }],
+    });
+    // PreToolUse permission hook must still fire alongside.
+    assert.equal(json.hooks.PreToolUse.length, 1);
+    assert.match(json.hooks.PreToolUse[0].hooks[0].command, /\/x\.js/);
+  } finally {
+    handle.cleanup();
+  }
+});
+
+test("buildPermissionHookConfig with extraHooks.Stop adds one entry per command", () => {
+  const handle = buildPermissionHookConfig({
+    hookBinaryPath: "/x.js",
+    runId: "run-extra-stop",
+    rootDir: root,
+    extraHooks: { Stop: ["npm test", "echo done"] },
+  });
+  try {
+    const json = JSON.parse(readFileSync(handle.settingsPath, "utf8"));
+    assert.equal(json.hooks.Stop.length, 2);
+    assert.equal(json.hooks.Stop[0].hooks[0].command, "npm test");
+    assert.equal(json.hooks.Stop[1].hooks[0].command, "echo done");
+    assert.equal(
+      json.hooks.PostToolUse,
+      undefined,
+      "Stop-only extras must not invent a PostToolUse key",
+    );
+  } finally {
+    handle.cleanup();
+  }
+});
+
+test("buildPermissionHookConfig with both PostToolUse and Stop materializes them side-by-side", () => {
+  const handle = buildPermissionHookConfig({
+    hookBinaryPath: "/x.js",
+    runId: "run-extra-both",
+    rootDir: root,
+    extraHooks: {
+      PostToolUse: ["fmt"],
+      Stop: ["test"],
+    },
+  });
+  try {
+    const json = JSON.parse(readFileSync(handle.settingsPath, "utf8"));
+    assert.equal(json.hooks.PostToolUse[0].hooks[0].command, "fmt");
+    assert.equal(json.hooks.Stop[0].hooks[0].command, "test");
+    assert.match(
+      json.hooks.PreToolUse[0].hooks[0].command,
+      /\/x\.js/,
+      "ClaudeOS PreToolUse permission hook must remain wired alongside extras",
+    );
+  } finally {
+    handle.cleanup();
+  }
+});
+
+test("buildPermissionHookConfig drops empty extraHooks arrays without inventing keys", () => {
+  const handle = buildPermissionHookConfig({
+    hookBinaryPath: "/x.js",
+    runId: "run-extra-empty",
+    rootDir: root,
+    extraHooks: { PostToolUse: [], Stop: [] },
+  });
+  try {
+    const json = JSON.parse(readFileSync(handle.settingsPath, "utf8"));
+    assert.equal(json.hooks.PostToolUse, undefined);
+    assert.equal(json.hooks.Stop, undefined);
+    assert.ok(json.hooks.PreToolUse, "PreToolUse always present");
+  } finally {
+    handle.cleanup();
+  }
+});
+
 test("persistPermissionDecision merges multiple decisions into one file", () => {
   const handle = buildPermissionHookConfig({
     hookBinaryPath: "/x.js",

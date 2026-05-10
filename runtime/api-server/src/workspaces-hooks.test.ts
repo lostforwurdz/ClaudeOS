@@ -19,7 +19,7 @@ import type { FastifyInstance } from "fastify";
 import type { Workspace } from "@claudeos/runtime-client/contracts";
 
 import { openDb } from "./db.js";
-import { createServer } from "./index.js";
+import { createServer, toExtraHooks } from "./index.js";
 
 let tmpDir: string;
 let app: FastifyInstance | null = null;
@@ -288,6 +288,38 @@ test("openDb adds hooks_json to legacy tables and existing rows read back as hoo
   assert.equal(ws.id, "legacy-ws");
   assert.equal(ws.name, "old");
   assert.equal(ws.hooks ?? null, null, "legacy row must surface hooks: null");
+});
+
+// ----------------------------------------------------------------------------
+// 4. toExtraHooks: SDK shape (snake_case) → harness shape (PascalCase).
+// ----------------------------------------------------------------------------
+
+test("toExtraHooks returns undefined for null/undefined input", () => {
+  assert.equal(toExtraHooks(null), undefined);
+  assert.equal(toExtraHooks(undefined), undefined);
+});
+
+test("toExtraHooks returns undefined when both arrays are absent or empty", () => {
+  assert.equal(toExtraHooks({}), undefined);
+  assert.equal(toExtraHooks({ post_tool_use: [], stop: [] }), undefined);
+});
+
+test("toExtraHooks maps post_tool_use → PostToolUse and stop → Stop", () => {
+  assert.deepEqual(
+    toExtraHooks({ post_tool_use: ["fmt"], stop: ["test"] }),
+    { PostToolUse: ["fmt"], Stop: ["test"] },
+  );
+});
+
+test("toExtraHooks omits a key whose array is empty rather than emitting an empty array", () => {
+  assert.deepEqual(
+    toExtraHooks({ post_tool_use: ["fmt"], stop: [] }),
+    { PostToolUse: ["fmt"] },
+  );
+  assert.deepEqual(
+    toExtraHooks({ post_tool_use: [], stop: ["test"] }),
+    { Stop: ["test"] },
+  );
 });
 
 test("openDb is idempotent: calling twice does not duplicate the hooks_json column", async () => {
