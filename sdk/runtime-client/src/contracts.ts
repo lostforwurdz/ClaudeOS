@@ -269,3 +269,73 @@ export interface Page<T> {
   items: T[];
   next_before: string | null;
 }
+
+// ============================================================================
+// vk3.2: Skills + Domains (Command Center data model)
+// ============================================================================
+
+export interface Domain {
+  id: string;
+  name: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  domain_id: string;
+  prompt_template: string;
+  /**
+   * Client-resolved against desktop/src/modes.ts MODES. Server is lenient —
+   * accepts any string; does not validate against a hardcoded list.
+   */
+  mode_id: string;
+  /** Null = caller picks at launch time (ephemeral / active). */
+  target_workspace_id: string | null;
+  is_automation: boolean;
+  schedule_cron: string | null;
+  hotkey: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateDomainBody {
+  name: string;
+  sort_order?: number;
+}
+
+export interface UpdateDomainBody {
+  name?: string;
+  sort_order?: number;
+}
+
+export interface CreateSkillBody {
+  name: string;
+  description?: string;
+  domain_id: string;
+  prompt_template: string;
+  mode_id?: string;
+  target_workspace_id?: string | null;
+  is_automation?: boolean;
+  schedule_cron?: string | null;
+  hotkey?: string | null;
+  sort_order?: number;
+}
+
+export type UpdateSkillBody = Partial<Omit<CreateSkillBody, "domain_id">> & {
+  domain_id?: string;
+};
+
+export interface LaunchSkillResponse {
+  skill: Skill;
+  /**
+   * Resolved at launch time. If skill.target_workspace_id was set and the
+   * workspace still exists, that id is returned. Otherwise null — the
+   * desktop is responsible for picking (vk3.4).
+   */
+  resolved_workspace_id: string | null;
+}

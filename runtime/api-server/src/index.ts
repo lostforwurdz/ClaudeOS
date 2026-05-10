@@ -8,12 +8,19 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type {
+  CreateDomainBody,
   CreateSessionBody,
+  CreateSkillBody,
   CreateWorkspaceBody,
+  Domain,
+  LaunchSkillResponse,
   McpServerConfig,
   RunRequest,
   Session,
+  Skill,
   SubmitRunResponse,
+  UpdateDomainBody,
+  UpdateSkillBody,
   Workspace,
   WorkspaceHooks,
 } from "@claudeos/runtime-client/contracts";
@@ -94,9 +101,101 @@ const SubmitRunSchema = z.object({
   debug: z.boolean().optional(),
 });
 
+// vk3.2: Domains + Skills schemas
+const CreateDomainSchema = z.object({
+  name: z.string().min(1),
+  sort_order: z.number().int().optional(),
+});
+
+const UpdateDomainSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    sort_order: z.number().int().optional(),
+  })
+  .refine(
+    (v) => v.name !== undefined || v.sort_order !== undefined,
+    "PATCH body must include at least one of: name, sort_order",
+  );
+
+const CreateSkillSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  domain_id: z.string().min(1),
+  prompt_template: z.string().min(1),
+  // mode_id intentionally accepts any string — server is lenient.
+  mode_id: z.string().optional(),
+  target_workspace_id: z.union([z.string().min(1), z.null()]).optional(),
+  is_automation: z.boolean().optional(),
+  schedule_cron: z.union([z.string().min(1), z.null()]).optional(),
+  hotkey: z.union([z.string().min(1), z.null()]).optional(),
+  sort_order: z.number().int().optional(),
+});
+
+const UpdateSkillSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    description: z.string().optional(),
+    domain_id: z.string().min(1).optional(),
+    prompt_template: z.string().min(1).optional(),
+    mode_id: z.string().optional(),
+    target_workspace_id: z.union([z.string().min(1), z.null()]).optional(),
+    is_automation: z.boolean().optional(),
+    schedule_cron: z.union([z.string().min(1), z.null()]).optional(),
+    hotkey: z.union([z.string().min(1), z.null()]).optional(),
+    sort_order: z.number().int().optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, "PATCH body must include at least one field");
+
 // ----------------------------------------------------------------------------
 // Repository helpers
 // ----------------------------------------------------------------------------
+
+// vk3.2: raw DB row shape — is_automation is INTEGER (0/1) from better-sqlite3.
+interface SkillRow {
+  id: string;
+  name: string;
+  description: string;
+  domain_id: string;
+  prompt_template: string;
+  mode_id: string;
+  target_workspace_id: string | null;
+  is_automation: number; // 0 or 1
+  schedule_cron: string | null;
+  hotkey: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// vk3.2: convert SQLite row to typed Skill (INTEGER is_automation → boolean).
+function rowToSkill(row: SkillRow): Skill {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    domain_id: row.domain_id,
+    prompt_template: row.prompt_template,
+    mode_id: row.mode_id,
+    target_workspace_id: row.target_workspace_id,
+    is_automation: row.is_automation !== 0,
+    schedule_cron: row.schedule_cron,
+    hotkey: row.hotkey,
+    sort_order: row.sort_order,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+// vk3.2: domain-validation error — maps to HTTP 422 at the route layer.
+export class SkillError extends Error {
+  constructor(
+    message: string,
+    public readonly code: "domain_not_found",
+  ) {
+    super(message);
+    this.name = "SkillError";
+  }
+}
 
 interface Repo {
   createWorkspace(body: CreateWorkspaceBody): Workspace;
@@ -109,6 +208,20 @@ interface Repo {
   createSession(body: CreateSessionBody): Session;
   getSession(id: string): Session | null;
   listSessions(workspaceId: string, opts: { limit: number; before?: string }): Session[];
+
+  // vk3.2: domains
+  listDomains(): Domain[];
+  createDomain(body: CreateDomainBody): Domain;
+  getDomain(id: string): Domain | null;
+  updateDomain(id: string, patch: UpdateDomainBody): Domain | null;
+  deleteDomain(id: string): boolean;
+
+  // vk3.2: skills
+  listSkills(opts?: { domain_id?: string }): Skill[];
+  createSkill(body: CreateSkillBody): Skill; // throws SkillError if domain_id missing
+  getSkill(id: string): Skill | null;
+  updateSkill(id: string, patch: UpdateSkillBody): Skill | null; // throws SkillError if domain_id missing
+  deleteSkill(id: string): boolean;
 }
 
 // a17.8: translate the public Workspace.hooks shape into the harness's
@@ -304,6 +417,177 @@ function createRepo(db: DatabaseType): Repo {
           ? (stmt.all(workspaceId, before, limit) as Session[])
           : (stmt.all(workspaceId, limit) as Session[])
       );
+    },
+
+    // vk3.2: Domains ----------------------------------------------------------
+
+    listDomains() {
+      return db
+        .prepare(`SELECT id, name, sort_order, created_at, updated_at
+                    FROM domains ORDER BY sort_order ASC, created_at ASC`)
+        .all() as Domain[];
+    },
+    createDomain(body) {
+      const now = new Date().toISOString();
+      const id = randomUUID();
+      // Default sort_order to MAX(sort_order) + 1 within domains.
+      const sortOrder =
+        body.sort_order ??
+        (() => {
+          const row = db
+            .prepare("SELECT COALESCE(MAX(sort_order), -1) as m FROM domains")
+            .get() as { m: number };
+          return row.m + 1;
+        })();
+      db.prepare(
+        `INSERT INTO domains (id, name, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run(id, body.name, sortOrder, now, now);
+      return this.getDomain(id) as Domain;
+    },
+    getDomain(id) {
+      const row = db
+        .prepare(
+          `SELECT id, name, sort_order, created_at, updated_at FROM domains WHERE id = ?`,
+        )
+        .get(id) as Domain | undefined;
+      return row ?? null;
+    },
+    updateDomain(id, patch) {
+      const now = new Date().toISOString();
+      const sets: string[] = ["updated_at = ?"];
+      const params: unknown[] = [now];
+      if (patch.name !== undefined) {
+        sets.push("name = ?");
+        params.push(patch.name);
+      }
+      if (patch.sort_order !== undefined) {
+        sets.push("sort_order = ?");
+        params.push(patch.sort_order);
+      }
+      params.push(id);
+      const result = db
+        .prepare(`UPDATE domains SET ${sets.join(", ")} WHERE id = ?`)
+        .run(...(params as [unknown, ...unknown[]]));
+      if (result.changes === 0) return null;
+      return this.getDomain(id);
+    },
+    deleteDomain(id) {
+      const result = db.prepare(`DELETE FROM domains WHERE id = ?`).run(id);
+      return result.changes > 0;
+    },
+
+    // vk3.2: Skills -----------------------------------------------------------
+
+    listSkills(opts) {
+      const rows = opts?.domain_id
+        ? (db
+            .prepare(
+              `SELECT id, name, description, domain_id, prompt_template, mode_id,
+                      target_workspace_id, is_automation, schedule_cron, hotkey,
+                      sort_order, created_at, updated_at
+                 FROM skills WHERE domain_id = ?
+                 ORDER BY sort_order ASC, created_at ASC`,
+            )
+            .all(opts.domain_id) as SkillRow[])
+        : (db
+            .prepare(
+              `SELECT id, name, description, domain_id, prompt_template, mode_id,
+                      target_workspace_id, is_automation, schedule_cron, hotkey,
+                      sort_order, created_at, updated_at
+                 FROM skills ORDER BY sort_order ASC, created_at ASC`,
+            )
+            .all() as SkillRow[]);
+      return rows.map(rowToSkill);
+    },
+    createSkill(body) {
+      const domain = this.getDomain(body.domain_id);
+      if (!domain) {
+        throw new SkillError(
+          `domain not found: ${body.domain_id}`,
+          "domain_not_found",
+        );
+      }
+      const now = new Date().toISOString();
+      const id = randomUUID();
+      const sortOrder =
+        body.sort_order ??
+        (() => {
+          const row = db
+            .prepare(
+              "SELECT COALESCE(MAX(sort_order), -1) as m FROM skills WHERE domain_id = ?",
+            )
+            .get(body.domain_id) as { m: number };
+          return row.m + 1;
+        })();
+      db.prepare(
+        `INSERT INTO skills
+           (id, name, description, domain_id, prompt_template, mode_id,
+            target_workspace_id, is_automation, schedule_cron, hotkey,
+            sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        id,
+        body.name,
+        body.description ?? "",
+        body.domain_id,
+        body.prompt_template,
+        body.mode_id ?? "default",
+        body.target_workspace_id ?? null,
+        body.is_automation ? 1 : 0,
+        body.schedule_cron ?? null,
+        body.hotkey ?? null,
+        sortOrder,
+        now,
+        now,
+      );
+      return this.getSkill(id) as Skill;
+    },
+    getSkill(id) {
+      const row = db
+        .prepare(
+          `SELECT id, name, description, domain_id, prompt_template, mode_id,
+                  target_workspace_id, is_automation, schedule_cron, hotkey,
+                  sort_order, created_at, updated_at
+             FROM skills WHERE id = ?`,
+        )
+        .get(id) as SkillRow | undefined;
+      if (!row) return null;
+      return rowToSkill(row);
+    },
+    updateSkill(id, patch) {
+      if (patch.domain_id !== undefined) {
+        const domain = this.getDomain(patch.domain_id);
+        if (!domain) {
+          throw new SkillError(
+            `domain not found: ${patch.domain_id}`,
+            "domain_not_found",
+          );
+        }
+      }
+      const now = new Date().toISOString();
+      const sets: string[] = ["updated_at = ?"];
+      const params: unknown[] = [now];
+      if (patch.name !== undefined) { sets.push("name = ?"); params.push(patch.name); }
+      if (patch.description !== undefined) { sets.push("description = ?"); params.push(patch.description); }
+      if (patch.domain_id !== undefined) { sets.push("domain_id = ?"); params.push(patch.domain_id); }
+      if (patch.prompt_template !== undefined) { sets.push("prompt_template = ?"); params.push(patch.prompt_template); }
+      if (patch.mode_id !== undefined) { sets.push("mode_id = ?"); params.push(patch.mode_id); }
+      if ("target_workspace_id" in patch) { sets.push("target_workspace_id = ?"); params.push(patch.target_workspace_id ?? null); }
+      if (patch.is_automation !== undefined) { sets.push("is_automation = ?"); params.push(patch.is_automation ? 1 : 0); }
+      if ("schedule_cron" in patch) { sets.push("schedule_cron = ?"); params.push(patch.schedule_cron ?? null); }
+      if ("hotkey" in patch) { sets.push("hotkey = ?"); params.push(patch.hotkey ?? null); }
+      if (patch.sort_order !== undefined) { sets.push("sort_order = ?"); params.push(patch.sort_order); }
+      params.push(id);
+      const result = db
+        .prepare(`UPDATE skills SET ${sets.join(", ")} WHERE id = ?`)
+        .run(...(params as [unknown, ...unknown[]]));
+      if (result.changes === 0) return null;
+      return this.getSkill(id);
+    },
+    deleteSkill(id) {
+      const result = db.prepare(`DELETE FROM skills WHERE id = ?`).run(id);
+      return result.changes > 0;
     },
   };
 }
@@ -665,6 +949,92 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
       });
       const next_before = items.length === limit ? items[items.length - 1].started_at : null;
       return { items, next_before };
+    },
+  );
+
+  // -- Domains (vk3.2) -------------------------------------------------------
+
+  app.get("/domains", async () => repo.listDomains());
+
+  app.post("/domains", async (request, reply) => {
+    const parsed = CreateDomainSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.format() });
+    return reply.code(200).send(repo.createDomain(parsed.data));
+  });
+
+  app.patch<{ Params: { id: string } }>("/domains/:id", async (request, reply) => {
+    const parsed = UpdateDomainSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.format() });
+    const updated = repo.updateDomain(request.params.id, parsed.data);
+    if (!updated) return reply.code(404).send({ error: "domain not found" });
+    return updated;
+  });
+
+  app.delete<{ Params: { id: string } }>("/domains/:id", async (request, reply) => {
+    const ok = repo.deleteDomain(request.params.id);
+    if (!ok) return reply.code(404).send({ error: "domain not found" });
+    return reply.code(204).send();
+  });
+
+  // -- Skills (vk3.2) --------------------------------------------------------
+
+  app.get<{ Querystring: { domain_id?: string } }>("/skills", async (request) => {
+    return repo.listSkills(
+      request.query.domain_id ? { domain_id: request.query.domain_id } : undefined,
+    );
+  });
+
+  app.get<{ Params: { id: string } }>("/skills/:id", async (request, reply) => {
+    const skill = repo.getSkill(request.params.id);
+    if (!skill) return reply.code(404).send({ error: "skill not found" });
+    return skill;
+  });
+
+  app.post("/skills", async (request, reply) => {
+    const parsed = CreateSkillSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.format() });
+    try {
+      return reply.code(200).send(repo.createSkill(parsed.data));
+    } catch (err) {
+      if (err instanceof SkillError && err.code === "domain_not_found") {
+        return reply.code(422).send({ error: err.message, code: err.code });
+      }
+      throw err;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>("/skills/:id", async (request, reply) => {
+    const parsed = UpdateSkillSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.format() });
+    try {
+      const updated = repo.updateSkill(request.params.id, parsed.data);
+      if (!updated) return reply.code(404).send({ error: "skill not found" });
+      return updated;
+    } catch (err) {
+      if (err instanceof SkillError && err.code === "domain_not_found") {
+        return reply.code(422).send({ error: err.message, code: err.code });
+      }
+      throw err;
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>("/skills/:id", async (request, reply) => {
+    const ok = repo.deleteSkill(request.params.id);
+    if (!ok) return reply.code(404).send({ error: "skill not found" });
+    return reply.code(204).send();
+  });
+
+  app.post<{ Params: { id: string } }>(
+    "/skills/:id/launch",
+    async (request, reply): Promise<LaunchSkillResponse | { error: string }> => {
+      const skill = repo.getSkill(request.params.id);
+      if (!skill) return reply.code(404).send({ error: "skill not found" });
+      // Resolve target_workspace_id — null if the workspace was deleted.
+      const resolvedWorkspaceId =
+        skill.target_workspace_id && repo.getWorkspace(skill.target_workspace_id)
+          ? skill.target_workspace_id
+          : null;
+      return { skill, resolved_workspace_id: resolvedWorkspaceId };
     },
   );
 
