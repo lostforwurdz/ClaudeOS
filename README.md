@@ -4,19 +4,19 @@ A single-user desktop agent computer powered by Claude Code.
 
 ClaudeOS wraps the [Claude Code](https://claude.com/claude-code) headless CLI in an Electron desktop shell with persistent workspaces, multi-session concurrency, browser-tool MCP, and continuity artifacts. Forked from [holaOS](https://github.com/holaboss-ai/holaOS) for inspiration; rebuilt from the ground up.
 
-**Status:** Phase 1 — foundations. Not yet runnable.
+**Status:** runnable in dev (`npm run dev`) and packageable (`npm --prefix desktop run pack`). Active surfaces include first-run paste-token + safeStorage, multi-workspace + multi-session, hook-based permission UI, Mission Control / swarm console, history + templates, and electron-updater auto-update.
 
 ## Layout
 
 | Path | What |
 |---|---|
 | `runtime/harness/` | Spawns `claude` CLI, parses stream-json, emits `RunEvent`s |
-| `runtime/api-server/` | Workspace + session + run lifecycle (Fastify + WebSocket) |
-| `runtime/state-store/` | SQLite-backed workspace state |
-| `sdk/bridge/` | Desktop ↔ runtime IPC contract |
+| `runtime/api-server/` | Workspace + session + run lifecycle (Fastify + WebSocket), SQLite-backed |
 | `sdk/runtime-client/` | TypeScript client for the api-server |
-| `desktop/` | Electron shell |
-| `packages/browser-mcp/` | Stdio MCP server: Playwright-driven `navigate`/`click`/`screenshot`/`extract` tools |
+| `desktop/` | Electron shell (Vite renderer, tsup main, Playwright e2e under `desktop/e2e/`) |
+| `packages/browser-mcp/` | Stdio MCP: Playwright-driven `navigate`/`click`/`screenshot`/`extract` tools |
+| `packages/memory-mcp/` | Stdio MCP: per-workspace persistent memory store |
+| `packages/claude-cli/` | Pinned `@anthropic-ai/claude-code` CLI bundled with the app |
 
 ## Prerequisites
 
@@ -34,6 +34,7 @@ On first launch the desktop app opens a paste-token window if no `CLAUDE_CODE_OA
 npm run harness:install
 npm run api-server:install
 npm run browser-mcp:install
+npm run memory-mcp:install
 npm run runtime-client:install
 npm run desktop:install
 
@@ -41,6 +42,7 @@ npm run desktop:install
 npm run harness:build
 npm run api-server:build
 npm run browser-mcp:build
+npm run memory-mcp:build
 
 # IMPORTANT: rebuild native modules against Electron's Node ABI. Without this,
 # the api-server crashes on startup with "compiled against a different Node.js
